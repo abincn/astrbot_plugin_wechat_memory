@@ -34,5 +34,9 @@
 <dialog id="editor"><form id="editor-form"><h2 id="editor-title">记忆内容</h2><label>自然语言事实<textarea id="content" required maxlength="1000" rows="5"></textarea></label>
 <div id="new-fields"><label>分类<select id="kind"><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">成员画像</option></select></label><label>主题标识（可选）<input id="topic" maxlength="90"></label><label>成员微信 ID（画像必填）<input id="subject" maxlength="256"></label></div>
 <div class="dialog-actions"><button id="cancel" type="button">取消</button><button class="primary" type="submit">保存</button></div></form></dialog>
-<script type="module" src="./app.js"></script>
+<dialog id="confirm-dialog" aria-labelledby="confirm-title"><form method="dialog">
+<h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p>
+<div class="dialog-actions"><button type="submit" value="cancel">取消</button><button type="submit" value="ok" class="danger">确认</button></div>
+</form></dialog>
+<script type="module" src="./app.js?v=0.2.2"></script>
 </body></html>
