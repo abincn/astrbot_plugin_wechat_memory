@@ -1,8 +1,12 @@
-# AstrBot WeChat Memory — v0.2.1
+# AstrBot WeChat Memory — v0.2.2
 
 独立的 AstrBot 长期记忆插件。运行链：PC 微信 Hook → [astrbot_plugin_wechat_hook](https://github.com/abincn/astrbot_plugin_wechat_hook) → AstrBot → 本插件。**不需要 Hermes、OneBot 或微信 Agent 插件**；不接管真实微信消息发送。
 
 > **发布状态：源码实现 / 开发预览。** 已进行语法静态检查，**未在真实 AstrBot、PC 微信 Hook、Provider、Dashboard 环境中完成运行验收**。首次安装只在测试群使用，数据库备份和 API 费用须自行管理。当前按**全新部署、没有旧数据**设计；不提供 v0.1.0 数据库升级迁移。若已有 v0.1.0 数据，**不要直接覆盖数据库运行**。
+
+## v0.2.2 修复
+
+AstrBot 4.29.4 插件视图的 iframe 不允许浏览器原生 `confirm()`。此前点击「从 Hook Inbox 补录」会被浏览器直接拦截，导致无网络请求且无反馈。本版补录为只读操作，点击后立即显示运行状态并发起请求；删除及回滚改为页面内 `<dialog>` 确认，不再依赖受限的原生弹窗。页面 JS 附带版本参数防止旧脚本缓存。
 
 ## 功能
 
