@@ -63,7 +63,7 @@ for(const id of ['query','filter-status','filter-kind'])$(id).onchange=()=>busy(
 $('add').onclick=()=>showEditor('add');
 $('dream').onclick=()=>busy(async()=>{await api('run_now');notify('已安排巩固，稍后在“后台执行记录”中查看结果。');});
 $('dry-run').onclick=()=>busy(async()=>{await api('dry_run');notify('已安排预览，结果不会写入记忆，也不会推进游标，但会产生模型费用。');});
-$('backfill').onclick=()=>busy(async()=>{if(!confirm('从配置的 Hook Inbox 只读补录当前白名单群消息？'))return;const r=await bridge.apiPost('manage',{operation:'backfill',limit:500});notify(`补录完成：新增 ${r.imported}，重复 ${r.duplicates}。刷新查看。`);await connect();});
+$('backfill').onclick=()=>busy(async()=>{if(!state.current)return;const scope={...state.current};if(!confirm(`从 Hook Inbox 只读补录 ${scope.room} 的消息？`))return;const r=await bridge.apiPost('manage',{operation:'backfill',...scope,limit:500});await refresh();const errors=(r.errors||[]).map(x=>`${x.room} #${x.sequence}: ${x.error}`);notify(`Hook 补录：新增 ${r.imported}，重复 ${r.duplicates}，跳过 ${r.skipped}；来源库 ${r.source_rows} 条，当前群匹配 ${r.matching_rows} 条。${r.note?' '+r.note:''}${errors.length?' 失败：'+errors.join('；'):''}`,errors.length>0);});
 $('media').onclick=()=>busy(async()=>{await api('media_run');notify('已安排媒体分析。只有启用媒体模型并设置允许路径后才会处理。');});
 $('pause').onclick=()=>busy(async()=>{await api($('pause').dataset.paused==='true'?'resume':'pause');await refresh();});
 $('export').onclick=()=>busy(async()=>{const data=await api('export');const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=el('a');a.href=url;a.download='wechat-memory-'+state.current.room.replace(/[^a-zA-Z0-9.@-]/g,'_')+'.json';document.body.append(a);a.click();a.remove();URL.revokeObjectURL(url);notify('已导出当前群的记忆。');});
