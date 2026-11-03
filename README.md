@@ -71,7 +71,7 @@
 
 ### 可选 M6
 
-**Hook Inbox 补录**：只有启用 `backfill_enabled`、填入本机 `hook_inbox_db` 后，Dashboard 才允许触发。只读打开原始 Inbox，根据 `(owner,room,sequence)` 维护导入游标，严格群白名单，不改 Hook 数据。
+**Hook Inbox 补录（不使用 AstrBot 原生聊天历史）**：启用 `backfill_enabled`，选择当前微信账号与群并点击“从 Hook Inbox 补录”。插件使用 `Context.get_platform_inst()` 和 Hook 连接器的 `get_task_scope()` 获取真实 `inbox_db` 路径及所属微信账号，直接只读导入当前白名单群的 Hook 原始事件。默认不需要配置 `hook_inbox_db`，特殊部署可手动指定。使用消息 ID 去重、按群保存独立补录游标；不会修改 Hook 的数据库、采集开关或消息发送。**只能补录 Hook 连接器已经接收并保存的历史事件；Hook 开始采集前的微信历史不会从 Inbox 凭空恢复。**
 
 **向量检索**：设置 `embedding_enabled=true`、`embedding_api_url`、`embedding_model`；密钥放入 AstrBot 运行环境变量 `WECHAT_MEMORY_EMBED_API_KEY`，不写入群聊或数据库。向量索引保存在 SQLite，索引重建通过 Dreaming 成功后触发，查询可能产生额外请求费用。
 
