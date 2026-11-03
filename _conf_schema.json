@@ -137,7 +137,7 @@
   },
   "hook_inbox_db": {
     "type": "string",
-    "description": "Hook DurableInbox 的 SQLite 绝对路径，仅只读",
+    "description": "通常留空，自动从运行中的 Hook 连接器读取真实 Inbox 路径；仅特殊部署需要手动填写（容器内路径）",
     "default": ""
   },
   "embedding_enabled": {
