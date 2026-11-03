@@ -1,36 +1,38 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>微信长期记忆工作台</title>
-  <link rel="stylesheet" href="./style.css">
-</head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>微信记忆 Dreaming 工作台</title><link rel="stylesheet" href="./style.css"></head>
 <body>
-  <header><div><h1>微信长期记忆</h1><p>管理各群长期事实与成员画像；跨群授权由用户本人控制。</p></div><span class="tag">AstrBot 原生插件</span></header>
-  <section class="toolbar" aria-label="选择工作区">
-    <label>微信账号 / 群<select id="scope"></select></label>
-    <button id="refresh">刷新</button>
-    <button id="export">导出当前群 JSON</button>
-    <button id="pause">暂停提取</button>
-  </section>
-  <div id="status" role="status" aria-live="polite">连接中…</div>
-  <section class="metrics" aria-label="记忆统计">
-    <div><span>有效记忆</span><strong id="active">—</strong></div>
-    <div><span>待审核</span><strong id="review">—</strong></div>
-    <div><span>排队消息</span><strong id="pending">—</strong></div>
-    <div><span>今日模型调用</span><strong id="calls">—</strong></div>
-    <div><span>今日估算/记录 Token</span><strong id="tokens">—</strong></div>
-  </section>
-  <main>
-    <section class="board">
-      <div class="section-heading"><h2>记忆记录</h2><button class="primary" id="add">新增记忆</button></div>
-      <div class="filters"><input id="query" type="search" placeholder="搜索当前群记忆"><select id="filter-status"><option value="">全部状态</option><option value="active">有效</option><option value="review">待审核</option><option value="superseded">已替代</option><option value="deleted">已删除</option></select><select id="filter-kind"><option value="">全部类型</option><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">群内成员画像</option></select></div>
-      <div id="items" class="items"><p class="empty">暂无记忆记录。</p></div>
-    </section>
-    <aside class="detail"><h2>详情与操作</h2><div id="detail"><p class="muted">选择一条记录，可查看其来源并修改状态。</p></div></aside>
-  </main>
-  <footer>只对已选微信账号与群操作。群成员画像不会自动跨群共享；跨群授权须本人私聊 /wm。</footer>
-  <dialog id="editor"><form id="editor-form"><h2 id="editor-title">新增记忆</h2><label>内容<textarea id="content" required maxlength="500" rows="5"></textarea></label><div id="new-fields"><label>类型<select id="kind"><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">群内成员画像</option></select></label><label>主题标识（可选）<input id="topic" maxlength="90"></label><label>成员微信 ID（成员画像时必填）<input id="subject" maxlength="256"></label></div><div class="dialog-actions"><button id="cancel" type="button">取消</button><button class="primary" type="submit">保存</button></div></form></dialog>
-  <script type="module" src="./app.js"></script>
-</body>
-</html>
+<header><div><h1>微信群长期记忆 · Dreaming</h1><p>基于原文证据持续修订画像；按群独立、按需召回、费用受限。</p></div><span class="tag">AstrBot · SQLite</span></header>
+<section class="toolbar" aria-label="当前群与操作">
+<label>微信账号 / 群<select id="scope"></select></label>
+<button id="refresh">刷新</button><button id="dream">运行巩固</button><button id="dry-run">预览巩固</button>
+<button id="backfill">从 Hook Inbox 补录</button><button id="media">处理媒体</button>
+<button id="export">导出记忆</button><button id="pause">暂停巩固</button>
+</section>
+<div id="status" role="status" aria-live="polite">连接中…</div>
+<section class="metrics" aria-label="运行状态">
+<div><span>原始消息</span><strong id="raw">—</strong></div>
+<div><span>有效记忆</span><strong id="active">—</strong></div>
+<div><span>待审候选</span><strong id="review">—</strong></div>
+<div><span>未巩固消息</span><strong id="pending">—</strong></div>
+<div><span>今日 Token 记录/估计</span><strong id="tokens">—</strong></div>
+</section>
+<section class="toolbar view-toolbar"><label>查看内容<select id="view">
+<option value="memories">长期记忆</option><option value="candidates">巩固候选/差异审核</option>
+<option value="runs">Dreaming 运行记录</option><option value="history">原始历史</option>
+<option value="retrieval_audit">检索审计</option></select></label>
+<small id="meta" class="muted"></small></section>
+<main>
+<section class="board"><div class="section-heading"><h2 id="list-title">长期记忆</h2><button class="primary" id="add">人工新增</button></div>
+<div class="filters" id="memory-filters"><input id="query" type="search" placeholder="筛选本群记忆">
+<select id="filter-status"><option value="">全部状态</option><option value="active">有效</option><option value="review">待审核</option><option value="superseded">已替代</option><option value="deleted">已删除</option></select>
+<select id="filter-kind"><option value="">全部分类</option><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">成员画像</option></select></div>
+<div id="items" class="items"><p class="empty">暂无记录</p></div></section>
+<aside class="detail"><h2>详情、证据与管理</h2><div id="detail"><p class="muted">选中记录查看来源或版本。</p></div></aside>
+</main>
+<footer>模型生成的是候选，不是事实证明。审核操作要求 Dashboard 管理员登录；群内画像绝不自动升级为跨群画像。媒体与历史补录均需要手动启用。</footer>
+<dialog id="editor"><form id="editor-form"><h2 id="editor-title">记忆内容</h2><label>自然语言事实<textarea id="content" required maxlength="1000" rows="5"></textarea></label>
+<div id="new-fields"><label>分类<select id="kind"><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">成员画像</option></select></label><label>主题标识（可选）<input id="topic" maxlength="90"></label><label>成员微信 ID（画像必填）<input id="subject" maxlength="256"></label></div>
+<div class="dialog-actions"><button id="cancel" type="button">取消</button><button class="primary" type="submit">保存</button></div></form></dialog>
+<script type="module" src="./app.js"></script>
+</body></html>

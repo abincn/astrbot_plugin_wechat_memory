@@ -1,83 +1,153 @@
-"""Single-process bounded scheduler; no tools and no outbound WeChat actions."""
+"""Bounded, per-room Dreaming scheduler with persistent cursor and SQLite lease."""
 from __future__ import annotations
 
 import asyncio
-from astrbot.api import logger
+import datetime as dt
+import uuid
+from zoneinfo import ZoneInfo
 
-from .extraction import analyze
+from astrbot.api import logger
+from .extraction import analyze, build_input, estimate_tokens, SYSTEM
+from .evolution import apply
+from .storage import now,day_key
 
 
 class MemoryScheduler:
-    def __init__(self, store, context, config, allowed_rooms: set[str]):
-        self.store=store
-        self.context=context
-        self.config=config
-        self.allowed_rooms=allowed_rooms
-        self._stop=asyncio.Event()
-        self._wake=asyncio.Event()
-        self._task=None
-
-    def wake(self):
-        self._wake.set()
+    def __init__(self,store,context,config,allowed_rooms:set[str]):
+        self.store=store;self.context=context;self.config=config;self.allowed_rooms=allowed_rooms
+        self._task=None;self._stop=asyncio.Event();self._wake=asyncio.Event()
+        self._running=set()
 
     def start(self):
-        if self._task is None:
-            self._task=asyncio.create_task(self._run(),name='wechat_memory_scheduler')
+        if self._task is None:self._task=asyncio.create_task(self._run(),name='wechat_memory_dreaming')
+
+    def wake(self):self._wake.set()
 
     async def close(self):
-        self._stop.set()
-        self._wake.set()
+        self._stop.set();self._wake.set()
         if self._task:
-            # Allow a running model request to finish; bounded by its own timeout.
-            try:
-                await asyncio.wait_for(self._task,timeout=75)
+            try:await asyncio.wait_for(self._task,timeout=85)
             except asyncio.TimeoutError:
-                self._task.cancel()
-                await asyncio.gather(self._task,return_exceptions=True)
+                self._task.cancel();await asyncio.gather(self._task,return_exceptions=True)
+
+    def _scheduled_now(self,s):
+        cfg=self.config
+        try:zone=ZoneInfo(str(cfg.get('dream_timezone','Asia/Shanghai')))
+        except (KeyError,ValueError):zone=dt.timezone.utc
+        current=dt.datetime.now(zone)
+        hour=int(cfg.get('dream_hour',3))
+        with self.store._lock:
+            urgent=self.store.db.execute('''SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=?
+                AND urgent=1 AND id>(SELECT dream_cursor FROM room_state WHERE platform=? AND owner=? AND room=?) LIMIT 1''',
+                (*self.store._key(s),*self.store._key(s))).fetchone()
+        if urgent:return True
+        if current.hour<hour:return False
+        with self.store._lock:
+            r=self.store.db.execute('''SELECT last_success FROM room_state WHERE platform=? AND owner=? AND room=?''',
+                                    self.store._key(s)).fetchone()
+        last=int(r['last_success']) if r else 0
+        if last and dt.datetime.fromtimestamp(last,zone).date()==current.date():return False
+        return True
 
     async def _run(self):
-        try:
-            while not self._stop.is_set():
-                if self.config.get('enabled') and self.config.get('extraction_enabled') and self.config.get('extraction_provider_id'):
-                    try:
-                        await self.run_once()
-                    except Exception as exc:
-                        logger.warning(f'[wechat_memory] Scheduler cycle error: {type(exc).__name__}')
-                try:
-                    await asyncio.wait_for(self._wake.wait(),timeout=max(30,min(3600,int(self.config.get('scan_seconds',300)))))
-                    self._wake.clear()
-                except asyncio.TimeoutError:
-                    pass
-        finally:
-            self._stop.set()
+        while not self._stop.is_set():
+            if self.config.get('enabled') and self.config.get('dreaming_enabled') and self.config.get('extraction_provider_id'):
+                try:await self.run_once()
+                except Exception as exc:logger.warning('[wechat_memory] Dream sweep error: %s',type(exc).__name__)
+            try:
+                await asyncio.wait_for(self._wake.wait(),timeout=max(30,min(3600,int(self.config.get('scan_seconds',300)))))
+                self._wake.clear()
+            except asyncio.TimeoutError:pass
 
     async def run_once(self):
+        limit=max(1,min(4,int(self.config.get('max_parallel_groups',2))))
+        sem=asyncio.Semaphore(limit)
+        async def one(s):
+            async with sem:
+                if s.platform!=self.config.get('platform_id','wechat_pc_hook') or s.room not in self.allowed_rooms:return
+                if not self._scheduled_now(s):return
+                count,_=self.store.backlog(s)
+                if count<max(1,int(self.config.get('min_messages_to_dream',10))):
+                    with self.store._lock:
+                        urgent=self.store.db.execute('''SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=? AND urgent=1
+                          AND id>(SELECT dream_cursor FROM room_state WHERE platform=? AND owner=? AND room=?) LIMIT 1''',
+                          (*self.store._key(s),*self.store._key(s))).fetchone()
+                    if not urgent:return
+                if self.config.get('media_enabled'):
+                    from .media import analyze_pending
+                    await analyze_pending(self.store,s,self.config,limit=2)
+                await self.run_scope(s,force=bool(count<max(1,int(self.config.get('min_messages_to_dream',10)))))
+        await asyncio.gather(*(one(s) for s in self.store.due_scopes()),return_exceptions=False)
+
+    async def run_scope(self,s,*,dry_run=False,force=False):
         cfg=self.config
-        for scope in self.store.due_scopes():
-            if self._stop.is_set():
-                break
-            if scope.platform!=cfg.get('platform_id','wechat_pc_hook') or scope.room not in self.allowed_rooms:
-                continue
-            if not self.store.ready(scope, max(3,int(cfg.get('message_threshold',20))),
-                max(5,int(cfg.get('max_wait_minutes',60))), max(1,int(cfg.get('min_batch_messages',3)))):
-                continue
-            batch_id,rows=self.store.reserve(scope,
-                max(1,min(50,int(cfg.get('max_batch_messages',50)))),
-                max(1600,min(12000,int(cfg.get('max_batch_chars',6000)))),
-                max(1,min(100,int(cfg.get('max_daily_calls_per_group',12)))))
-            if not rows:
-                continue
+        if not cfg.get('enabled') or not cfg.get('extraction_provider_id'):
+            return {'status':'disabled','reason':'No provider configured'}
+        if s.platform!=cfg.get('platform_id','wechat_pc_hook') or s.room not in self.allowed_rooms or self.store.options(s):
+            return {'status':'denied'}
+        holder=uuid.uuid4().hex
+        if not self.store.acquire(s,holder,ttl=140):return {'status':'busy'}
+        try:
+            cursor,batch,end=self.store.pending_batch(s,
+                max_messages=max(1,min(500,int(cfg.get('max_messages_per_run',250)))),
+                max_chars=max(500,min(120000,int(cfg.get('max_message_chars_per_run',20000)))))
+            if not batch:
+                if end>cursor and not dry_run:self.store.advance(s,cursor,end)
+                return {'status':'empty','cursor':end}
+            if not force and len(batch)<max(1,int(cfg.get('min_messages_to_dream',10))):
+                return {'status':'insufficient','messages':len(batch)}
+            users={m['sender_id'] for m in batch}
+            existing=self.store.get_context_records(s,users,
+                limit_per_user=max(1,min(30,int(cfg.get('max_existing_per_member',12)))))
+            cap=max(1000,int(cfg.get('max_input_tokens_per_run',16000)))
+            # Reduce at complete message boundaries; the unprocessed remainder remains in raw archive.
+            while batch:
+                estimate=estimate_tokens(build_input(s,batch,existing)+SYSTEM)
+                if estimate<=cap:break
+                batch.pop();end=batch[-1]['id'] if batch else cursor
+            if not batch:
+                return {'status':'oversize','reason':'First message plus memory snapshot exceeds budget'}
+            charge_day=day_key()
+            max_calls=max(1,int(cfg.get('max_calls_per_group_day',2)))
+            max_daily=max(1000,int(cfg.get('max_tokens_per_group_day',40000)))
+            if not self.store.budget_reserve(s,estimate,purpose='dream',limit_calls=max_calls,limit_tokens=max_daily,
+                day=charge_day,max_usd=float(cfg.get('max_cost_per_group_day_usd',0) or 0),
+                input_price=float(cfg.get('input_price_usd_per_million',0) or 0),
+                output_price=float(cfg.get('output_price_usd_per_million',0) or 0),
+                expected_output=max(0,int(cfg.get('estimated_output_tokens_per_run',1500)))):
+                return {'status':'budget_exceeded','estimated_input':estimate}
+            rid=self.store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
+            counted_in=estimate;counted_out=0;is_estimated=True;failed=True
             try:
-                items,input_tokens,output_tokens=await analyze(self.context,cfg['extraction_provider_id'],scope,rows)
-                stats=self.store.complete(scope,batch_id,items,rows)
-                self.store.record_usage(scope,input_tokens,output_tokens)
-                logger.info(f'[wechat_memory] Extraction room={scope.room} messages={len(rows)} added={stats["added"]} review={stats["review"]} rejected={stats["rejected"]}')
-            except asyncio.CancelledError:
-                self.store.failed(scope,batch_id,'cancelled',120)
-                raise
+                changes,est,in_tok,out_tok,is_estimated=await analyze(self.context,
+                    cfg['extraction_provider_id'],s,batch,existing)
+                counted_in=in_tok;counted_out=out_tok
+                if self._stop.is_set() or s.room not in self.allowed_rooms or not cfg.get('enabled') or self.store.options(s):
+                    raise PermissionError('Room disabled during evolution')
+                if not self.store.lease_held(s,holder):raise RuntimeError('Lost Dreaming lease')
+                report=apply(self.store,s,rid,cursor,end,changes,batch,existing,dry_run=dry_run,
+                             max_changes=max(1,min(10,int(cfg.get('max_changes_per_run',8)))))
+                failed=False
+                self.store.finish_run(rid,'preview' if dry_run else 'committed',report['changed'],
+                                      actual_in=in_tok if not is_estimated else None,
+                                      actual_out=out_tok if not is_estimated else None,
+                                      output_est=out_tok if is_estimated else 0)
+                if not dry_run and cfg.get('embedding_enabled'):
+                    try:
+                        from .embeddings import index_missing
+                        await index_missing(self.store,s,cfg,limit=8)
+                    except Exception as embedding_exc:
+                        logger.warning('[wechat_memory] embedding index error: %s',type(embedding_exc).__name__)
+                report.update({'status':'preview' if dry_run else 'committed','run_id':rid,
+                               'estimated_input':estimate,'input_tokens':in_tok,
+                               'output_tokens':out_tok,'usage_estimated':is_estimated})
+                return report
             except Exception as exc:
-                delay=min(3600,120 * 2**min(4,max(r.get('attempts',0) for r in rows) if rows else 1))
-                self.store.failed(scope,batch_id,type(exc).__name__,delay)
-                logger.warning(f'[wechat_memory] Extraction failed room={scope.room} type={type(exc).__name__}; retry later')
-        # Only processed queue entries are cleaned, never pending rows.
-        self.store.cleanup(int(cfg.get('processed_retention_days',30)))
+                self.store.finish_run(rid,'failed',error=type(exc).__name__)
+                self.store.fail_scope(s,type(exc).__name__,max(120,int(cfg.get('retry_delay_seconds',600))))
+                logger.warning('[wechat_memory] Dreaming failed room=%s type=%s',s.room,type(exc).__name__)
+                return {'status':'failed','run_id':rid,'reason':type(exc).__name__}
+            finally:
+                self.store.budget_finish(s,estimate,counted_in,counted_out,purpose='dream',
+                                         estimated_usage=is_estimated,error=failed,day=charge_day)
+        finally:self.store.release(s,holder)

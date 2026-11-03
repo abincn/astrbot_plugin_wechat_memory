@@ -32,7 +32,7 @@ def get_scope(event, platform_id: str, allowed_rooms: set[str]) -> Scope | None:
     return Scope(platform_id, owner, room)
 
 
-def plain_text(message, max_chars: int = 1600) -> str:
+def plain_text(message, max_chars: int = 262144) -> str:
     """Only actual Plain components, never a guessed media description."""
     parts = []
     for component in getattr(message, "message", []) or []:

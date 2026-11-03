@@ -1,4 +1,4 @@
-"""AstrBot-native WeChat group memory, without Hermes or task plugin dependencies."""
+"""Native AstrBot WeChat memory: passive capture, opt-in Dreaming and scoped recall."""
 from __future__ import annotations
 
 import asyncio
@@ -17,132 +17,125 @@ from .storage import MemoryStore
 
 
 class Main(Star):
-    def __init__(self, context:Context, config:AstrBotConfig):
+    def __init__(self,context:Context,config:AstrBotConfig):
         super().__init__(context)
         self.cfg=config
         self.allowed_rooms={r for r in config.get('allowed_rooms',[]) if valid_room(r)}
         self.platform_id=str(config.get('platform_id','wechat_pc_hook'))
         self.store=MemoryStore(StarTools.get_data_dir(self.name)/'memory.sqlite3')
         self.scheduler=MemoryScheduler(self.store,context,config,self.allowed_rooms)
-        self.panel=MemoryPanel(context,self.store,config,self.allowed_rooms)
-        logger.info('[wechat_memory] Initialized; enabled=%s rooms=%s',bool(config.get('enabled')),len(self.allowed_rooms))
+        self.panel=MemoryPanel(context,self.store,config,self.allowed_rooms,self.scheduler)
+        logger.info('[wechat_memory] ready (enabled=%s; groups=%d)',bool(config.get('enabled')),len(self.allowed_rooms))
 
     @filter.on_astrbot_loaded()
-    async def start(self):
+    async def on_loaded(self):
         self.scheduler.start()
 
     async def terminate(self):
         self.panel.active=False
         await self.scheduler.close()
+        await self.panel.close()
         self.store.close()
-        logger.info('[wechat_memory] Stopped')
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    async def collect_group_message(self,event:AstrMessageEvent):
-        if not self.cfg.get('enabled') or not self.cfg.get('collection_enabled',True):
-            return
+    async def collect(self,event:AstrMessageEvent):
+        if not self.cfg.get('enabled') or not self.cfg.get('collection_enabled',True):return
         scope=get_scope(event,self.platform_id,self.allowed_rooms)
-        if scope is None:
+        sender=trusted_sender(event) if scope else None
+        if not sender:return
+        message=event.message_obj
+        mid=getattr(message,'message_id','')
+        stamp=getattr(message,'timestamp',0)
+        timestamp=int(stamp) if isinstance(stamp,(int,float)) and 0<stamp<time.time()+86400 else int(time.time())
+        content=plain_text(message,max_chars=1500000)
+        raw=getattr(message,'raw_message',None)
+        metadata=raw if isinstance(raw,dict) else {}
+        media_path=metadata.get('media_path','') if not content else ''
+        media_kind=metadata.get('media_kind','') if not content else ''
+        reply_to=metadata.get('reply_to_id','')
+        kind='text' if content else 'media'
+        if not content and not media_path and not media_kind:
+            # Do not fabricate media text from a missing attachment.
             return
-        sender=trusted_sender(event)
-        if not sender:
-            return
-        text=plain_text(event.message_obj)
-        if not text:
-            return
-        mid=getattr(event.message_obj,'message_id','')
-        stamp=getattr(event.message_obj,'timestamp',0)
-        timestamp=int(stamp) if isinstance(stamp,(int,float)) and stamp>0 else int(time.time())
-        urgent=any(k in text for k in ('记住这个','请记住','沉淀记忆','以后按这个来','把这个记下来'))
+        urgent=bool(content and any(w in content for w in ('请记住','记住这个','以后按这个来','把这个记下来')))
         try:
-            inserted=self.store.enqueue(scope,mid,sender,text,timestamp,urgent)
-            if inserted and urgent:
-                self.scheduler.wake()
+            inserted=self.store.enqueue(scope,mid,sender,content,timestamp,urgent,
+                kind=kind,reply_to_id=reply_to,media_path=media_path,media_kind=media_kind)
+            if inserted and urgent:self.scheduler.wake()
         except Exception as exc:
-            # Never block the normal AstrBot reply pipeline on a memory error.
-            logger.warning(f'[wechat_memory] Collector unavailable: {type(exc).__name__}')
+            logger.warning('[wechat_memory] archive failure: %s',type(exc).__name__)
 
     @filter.on_llm_request()
     async def inject(self,event:AstrMessageEvent,req):
-        if not self.cfg.get('enabled') or not self.cfg.get('retrieval_enabled',True):
-            return
+        if not self.cfg.get('enabled') or not self.cfg.get('retrieval_enabled',True):return
         scope=get_scope(event,self.platform_id,self.allowed_rooms)
-        if scope is None:
-            return
-        sender=trusted_sender(event)
-        if not sender:
-            return
-        query=event.message_str.strip()[:1500]
-        if not query:
-            return
+        sender=trusted_sender(event) if scope else None
+        if not sender:return
+        question=str(event.message_str).strip()[:1500]
+        if not question:return
         try:
-            context=recall(self.store,scope,sender,query,
-                max_items=int(self.cfg.get('max_retrieved_memories',6)),
-                max_chars=int(self.cfg.get('max_context_chars',2400)))
+            context=await recall(self.store,scope,sender,question,config=self.cfg)
             if context:
                 parts=list(req.extra_user_content_parts or [])
                 parts.append(TextPart(text=context).mark_as_temp())
                 req.extra_user_content_parts=parts
         except Exception as exc:
-            logger.warning(f'[wechat_memory] Recall unavailable: {type(exc).__name__}')
+            logger.warning('[wechat_memory] retrieval failure: %s',type(exc).__name__)
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
-    async def own_profile_commands(self,event:AstrMessageEvent):
-        if not self.cfg.get('enabled') or not self.cfg.get('enable_private_profile_commands',True):
-            return
+    async def user_commands(self,event:AstrMessageEvent):
+        if not self.cfg.get('enabled') or not self.cfg.get('enable_private_profile_commands',True):return
         ids=private_owner(event,self.platform_id)
-        if ids is None:
-            return
-        text=event.message_str.strip()
-        if text!='/wm' and not text.startswith('/wm '):
-            return
+        if not ids:return
+        text=str(event.message_str).strip()
+        if text!='/wm' and not text.startswith('/wm '):return
         event.stop_event()
-        owner,user=ids
-        try:
-            message=self._handle_self_command(owner,user,text)
-        except (ValueError,TypeError) as exc:
-            message='记忆操作未执行：'+str(exc)[:100]
+        try:result=self._command(*ids,text)
+        except (ValueError,PermissionError) as exc:result='操作未执行：'+str(exc)[:120]
         except Exception as exc:
-            logger.warning(f'[wechat_memory] Private profile command failed: {type(exc).__name__}')
-            message='记忆服务暂不可用。'
-        # Explicit direct-message command only. Honors Hook connector's normal send setting.
-        await event.send(event.plain_result(message))
+            logger.warning('[wechat_memory] private command failure: %s',type(exc).__name__)
+            result='记忆服务暂不可用。'
+        await event.send(event.plain_result(result))
 
-    def _handle_self_command(self,owner:str,user:str,text:str)->str:
-        help_text=('私聊记忆命令：\n'
-            '/wm profile add 内容（创建自己的全局画像）\n'
-            '/wm profile list（查看自己的全局画像）\n'
-            '/wm profile delete 记录ID（删除自己的全局画像）\n'
-            '/wm share allow 群ID@chatroom（允许在该群给自己使用画像）\n'
-            '/wm share revoke 群ID@chatroom（撤销授权）\n'
-            '/wm share list（查看授权群）\n'
-            '/wm privacy off（全部撤销授权）\n'
-            '不会从其他群自动复制个人画像；群内问答只为本人查询已授权画像。')
-        cmd=text.split(' ',3)
-        if len(cmd)==1 or cmd[1]=='help':return help_text
-        if cmd[1]=='profile':
-            if len(cmd)<3: return help_text
-            if cmd[2]=='list':
-                entries=self.store.global_list(self.platform_id,owner,user)
-                return '你的全局画像：\n'+'\n'.join(x['id']+' '+x['content'] for x in entries) if entries else '暂无全局个人画像。'
-            if cmd[2]=='add' and len(cmd)==4:
-                mid=self.store.global_add(self.platform_id,owner,user,cmd[3],'')
-                return '已保存你的个人画像，记录ID：'+mid+'。只有你明确授权的群才能在你本人提问时使用。'
-            if cmd[2]=='delete' and len(cmd)==4:
-                return '已删除。' if self.store.global_delete(self.platform_id,owner,user,cmd[3].strip()) else '记录不存在。'
-        if cmd[1]=='share':
-            if len(cmd)<3: return help_text
-            if cmd[2]=='list':
+    def _command(self,owner,user,command):
+        help_text=('私聊记忆命令：\n/wm profile add 内容\n/wm profile list\n'
+                   '/wm profile delete 记忆ID\n/wm share allow 群ID@chatroom\n'
+                   '/wm share revoke 群ID@chatroom\n/wm share list\n'
+                   '/wm group off 群ID@chatroom（删除群内个人画像并退出自动画像）\n'
+                   '/wm group on 群ID@chatroom（恢复允许群内画像）\n'
+                   '/wm group erase 群ID@chatroom（删除本人在该群的原始消息及画像）\n'
+                   '/wm privacy off（撤销全部跨群授权）')
+        words=command.split(' ',3)
+        if len(words)==1 or words[1]=='help':return help_text
+        if words[1]=='profile' and len(words)>2:
+            if words[2]=='list':
+                rows=self.store.global_list(self.platform_id,owner,user)
+                return '你的全局画像：\n'+'\n'.join(x['id']+' '+x['content'] for x in rows) if rows else '暂无全局画像。'
+            if words[2]=='add' and len(words)==4:
+                mid=self.store.global_add(self.platform_id,owner,user,words[3])
+                return '已添加，仅在本人明确授权的群里用于本人问答。记录ID：'+mid
+            if words[2]=='delete' and len(words)==4:
+                return '已删除。' if self.store.global_delete(self.platform_id,owner,user,words[3].strip()) else '记录不存在。'
+        if words[1]=='share' and len(words)>2:
+            if words[2]=='list':
                 rooms=self.store.list_permissions(self.platform_id,owner,user)
-                return '已授权群：\n'+'\n'.join(rooms) if rooms else '尚未授权任何群。'
-            if cmd[2] in ('allow','revoke') and len(cmd)==4:
-                room=cmd[3].strip()
-                if not valid_room(room) or room not in self.allowed_rooms:
-                    raise ValueError('群ID无效，或未列入插件 allowed_rooms。')
-                allow=cmd[2]=='allow'
-                self.store.set_permission(self.platform_id,owner,user,room,allow)
-                return '已授权该群仅对你本人使用画像。' if allow else '该群授权已撤销。'
-        if cmd[1]=='privacy' and len(cmd)>=3 and cmd[2]=='off':
+                return '已授权的群：\n'+'\n'.join(rooms) if rooms else '没有授权群。'
+            if words[2] in ('allow','revoke') and len(words)==4:
+                room=words[3].strip()
+                if room not in self.allowed_rooms:raise ValueError('该群未在 allowed_rooms')
+                self.store.set_permission(self.platform_id,owner,user,room,words[2]=='allow')
+                return '已修改本人跨群画像使用权限。'
+        if words[1]=='group' and len(words)==4:
+            op=words[2];room=words[3].strip()
+            if room not in self.allowed_rooms:raise ValueError('群未获授权')
+            scope=Scope(self.platform_id,owner,room)
+            if op in ('on','off'):
+                self.store.opt_out(scope,user,op=='off')
+                return '已更新本人群内画像设置。'
+            if op=='erase':
+                stats=self.store.erase_user_from_room(scope,user)
+                return f'本人在该群的数据已按请求清除：{stats}。以后默认退出群内自动画像。'
+        if words[1]=='privacy' and len(words)>2 and words[2]=='off':
             n=self.store.revoke_all(self.platform_id,owner,user)
-            return f'已撤销 {n} 个群的跨群个人画像授权。画像本身未删除。'
+            return f'已撤销 {n} 个群的个人全局画像授权。'
         return help_text
