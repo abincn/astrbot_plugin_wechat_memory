@@ -1,4 +1,4 @@
-# AstrBot WeChat Memory — v0.2.0
+# AstrBot WeChat Memory — v0.2.1
 
 独立的 AstrBot 长期记忆插件。运行链：PC 微信 Hook → [astrbot_plugin_wechat_hook](https://github.com/abincn/astrbot_plugin_wechat_hook) → AstrBot → 本插件。**不需要 Hermes、OneBot 或微信 Agent 插件**；不接管真实微信消息发送。
 
