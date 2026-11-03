@@ -15,6 +15,7 @@ from .media import analyze_pending
 
 class MemoryPanel:
     def __init__(self,context,store,config,allowed_rooms,scheduler):
+        self.context=context
         self.store=store;self.config=config;self.allowed_rooms=allowed_rooms
         self.scheduler=scheduler;self.active=True;self.tasks=set()
         context.register_web_api('/astrbot_plugin_wechat_memory/manage',self.handle,
@@ -51,10 +52,25 @@ class MemoryPanel:
                 return json_response(self._background(self.scheduler.run_scope(s,dry_run=op=='dry_run',force=True)))
             if op=='backfill':
                 if not self.config.get('enabled') or not self.config.get('backfill_enabled'):
-                    raise ValueError('Backfill must be explicitly enabled')
-                result=await asyncio.to_thread(import_inbox,self.store,
-                    self.config.get('hook_inbox_db',''),self.config.get('platform_id','wechat_pc_hook'),
-                    self.allowed_rooms,max_rows=min(2000,max(1,int(payload.get('limit',500)))))
+                    raise ValueError('请先在插件配置中启用 backfill_enabled')
+                s=self._scope(payload)
+                path=str(self.config.get('hook_inbox_db','') or '').strip()
+                adapter=self.context.get_platform_inst(s.platform)
+                if adapter is None or not callable(getattr(adapter,'get_task_scope',None)):
+                    if not path:
+                        raise ValueError('未找到运行中的微信 Hook 连接器，无法自动获取 Inbox 路径')
+                else:
+                    info=adapter.get_task_scope()
+                    if not isinstance(info,dict) or info.get('owner') != s.owner:
+                        raise PermissionError('微信 Hook 账号与所选账号不一致')
+                    if not path:
+                        path=str(info.get('inbox_db','') or '').strip()
+                if not path:
+                    raise ValueError('Hook 连接器没有提供 Inbox 路径')
+                result=await asyncio.to_thread(import_inbox,self.store,path,s.platform,{s.room},
+                    max_rows=min(2000,max(1,int(payload.get('limit',500)))),
+                    selected_owner=s.owner)
+                result['source']='hook-inbox'
                 return json_response(result,headers={'Cache-Control':'no-store'})
             data=await asyncio.to_thread(self._execute,payload,str(actor))
             return json_response(data,headers={'Cache-Control':'no-store'})
