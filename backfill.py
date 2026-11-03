@@ -19,7 +19,7 @@ REQUIRED_COLUMNS = {
 DEFAULT_INBOX = 'data/wechat_hook_inbox.sqlite3'
 
 
-def import_inbox(store, location, platform, allowed_rooms: set[str], *, max_rows=500):
+def import_inbox(store, location, platform, allowed_rooms: set[str], *, max_rows=500, selected_owner=''):
     """Import only allowlisted group events; never alter Hook's inbox or cursor."""
     if not allowed_rooms:
         raise ValueError('allowed_rooms 为空，没有允许补录的群')
@@ -67,7 +67,7 @@ def import_inbox(store, location, platform, allowed_rooms: set[str], *, max_rows
 
         for item in scopes:
             owner, room = item['owner'], item['room']
-            if room not in allowed_rooms or not valid_room(room) or not owner:
+            if room not in allowed_rooms or not valid_room(room) or not owner or (selected_owner and owner != selected_owner):
                 continue
             s = Scope(platform, str(owner), str(room))
             result['matching_rows'] += int(conn.execute(
