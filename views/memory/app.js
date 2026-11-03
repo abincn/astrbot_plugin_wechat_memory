@@ -6,7 +6,8 @@ const notify=(msg,bad=false)=>{$('status').textContent=msg;$('status').classList
 const date=(n)=>n?new Date(n*1000).toLocaleString('zh-CN',{hour12:false}):'—';
 const safeText=(v)=>v===null||v===undefined?'':String(v);
 async function api(op,fields={}){if(!state.current)throw new Error('请先选择群');return bridge.apiPost('manage',{...state.current,operation:op,...fields});}
-async function busy(fn){if(state.busy)return;state.busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notify(e?.message||'操作失败',true);}finally{state.busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+async function busy(fn){if(state.busy)return;state.busy=true;const disabled=[];document.querySelectorAll('button').forEach(b=>{if(!b.disabled&&!b.closest('#confirm-dialog')){b.disabled=true;disabled.push(b);}});try{await fn();}catch(e){notify(e?.message||'操作失败',true);}finally{state.busy=false;disabled.forEach(b=>b.disabled=false);}}
+function askConfirm(message){const dialog=$('confirm-dialog');$('confirm-message').textContent=message;dialog.returnValue='';return new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='ok'),{once:true});dialog.showModal();});}
 async function connect(){const r=await bridge.apiPost('manage',{operation:'scopes'});state.scopes=r.scopes||[];$('scope').replaceChildren();for(let i=0;i<state.scopes.length;i++){$('scope').append(el('option',`${state.scopes[i].owner} · ${state.scopes[i].room}`));}
 if(!state.scopes.length){notify('没有已观测的白名单群。可先发送消息，或在配置中启用 Hook Inbox 补录。');return;}
 state.current=state.scopes[0];await refresh();}
@@ -41,9 +42,9 @@ if(!row){box.append(el('p','选择记录查看详情。','muted'));return;}
 if(state.view==='memories'){
 box.append(el('h3',`记忆 ${row.kind} · r${row.revision}`),el('p',row.content,'content'),el('p',`ID: ${row.id}\n作用域: ${row.scope} / ${row.subject_id||'群'}\n状态: ${row.status}\n更新时间: ${date(row.updated_at)}`,'info'));
 const actions=el('div',undefined,'actions');if(row.status==='review')actions.append(button('批准普通待审核记录',async()=>{await api('approve',{id:row.id,revision:row.revision});await refresh();},'primary'));
-if(row.status!=='deleted')actions.append(button('编辑',async()=>showEditor('edit',row)),button('回滚前一版',async()=>{if(confirm('恢复到上一版本？')){await api('rollback',{id:row.id,revision:row.revision});await refresh();}}));
+if(row.status!=='deleted')actions.append(button('编辑',async()=>showEditor('edit',row)),button('回滚前一版',async()=>{if(await askConfirm('恢复到上一版本？')){await api('rollback',{id:row.id,revision:row.revision});await refresh();}}));
 if(row.status==='active'||row.status==='review')actions.append(button('停用',async()=>{await api('disable',{id:row.id,revision:row.revision});await refresh();}));
-if(row.status!=='deleted')actions.append(button('删除',async()=>{if(confirm('删除本群记忆？')){await api('delete',{id:row.id,revision:row.revision});await refresh();}},'danger'));
+if(row.status!=='deleted')actions.append(button('删除',async()=>{if(await askConfirm('删除本群记忆？')){await api('delete',{id:row.id,revision:row.revision});await refresh();}},'danger'));
 box.append(actions,el('h3','证据来源'));const src=await api('sources',{id:row.id});if(!(src.sources||[]).length)box.append(el('p','未记录对应的聊天证据（可能是人工录入）。','muted'));
 for(const s of src.sources||[])box.append(el('p',`${s.sender_id} · ${date(s.created_at)}\n${s.message_id}\n${s.text}`,'source'));
 const ver=await api('versions',{id:row.id});box.append(el('h3','历史修订'));
@@ -63,7 +64,7 @@ for(const id of ['query','filter-status','filter-kind'])$(id).onchange=()=>busy(
 $('add').onclick=()=>showEditor('add');
 $('dream').onclick=()=>busy(async()=>{await api('run_now');notify('已安排巩固，稍后在“后台执行记录”中查看结果。');});
 $('dry-run').onclick=()=>busy(async()=>{await api('dry_run');notify('已安排预览，结果不会写入记忆，也不会推进游标，但会产生模型费用。');});
-$('backfill').onclick=()=>busy(async()=>{if(!state.current)return;const scope={...state.current};if(!confirm(`从 Hook Inbox 只读补录 ${scope.room} 的消息？`))return;const r=await bridge.apiPost('manage',{operation:'backfill',...scope,limit:500});await refresh();const errors=(r.errors||[]).map(x=>`${x.room} #${x.sequence}: ${x.error}`);notify(`Hook 补录：新增 ${r.imported}，重复 ${r.duplicates}，跳过 ${r.skipped}；来源库 ${r.source_rows} 条，当前群匹配 ${r.matching_rows} 条。${r.note?' '+r.note:''}${errors.length?' 失败：'+errors.join('；'):''}`,errors.length>0);});
+$('backfill').onclick=()=>busy(async()=>{if(!state.current){notify('请先选择群',true);return;}const scope={...state.current};notify(`正在从 Hook Inbox 读取 ${scope.room} 的记录…`);const r=await bridge.apiPost('manage',{operation:'backfill',...scope,limit:500});await refresh();const errors=(r.errors||[]).map(x=>`${x.room} #${x.sequence}: ${x.error}`);notify(`Hook 补录：新增 ${r.imported}，重复 ${r.duplicates}，跳过 ${r.skipped}；来源库 ${r.source_rows} 条，当前群匹配 ${r.matching_rows} 条。${r.note?' '+r.note:''}${errors.length?' 失败：'+errors.join('；'):''}`,errors.length>0);});
 $('media').onclick=()=>busy(async()=>{await api('media_run');notify('已安排媒体分析。只有启用媒体模型并设置允许路径后才会处理。');});
 $('pause').onclick=()=>busy(async()=>{await api($('pause').dataset.paused==='true'?'resume':'pause');await refresh();});
 $('export').onclick=()=>busy(async()=>{const data=await api('export');const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=el('a');a.href=url;a.download='wechat-memory-'+state.current.room.replace(/[^a-zA-Z0-9.@-]/g,'_')+'.json';document.body.append(a);a.click();a.remove();URL.revokeObjectURL(url);notify('已导出当前群的记忆。');});
