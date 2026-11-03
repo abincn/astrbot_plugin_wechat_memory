@@ -1,0 +1,113 @@
+{
+  "enabled": {
+    "type": "bool",
+    "description": "启用微信群长期记忆（默认关闭）",
+    "default": false
+  },
+  "platform_id": {
+    "type": "string",
+    "description": "微信连接平台实例 ID",
+    "default": "wechat_pc_hook"
+  },
+  "allowed_rooms": {
+    "type": "list",
+    "description": "允许记忆的微信群 ID（群ID@chatroom，一项一个）",
+    "default": []
+  },
+  "collection_enabled": {
+    "type": "bool",
+    "description": "收集普通群聊天文本",
+    "default": true
+  },
+  "retrieval_enabled": {
+    "type": "bool",
+    "description": "在 LLM 请求中注入相关长期记忆",
+    "default": true
+  },
+  "extraction_enabled": {
+    "type": "bool",
+    "description": "开启后台 LLM 批量记忆提取",
+    "default": false
+  },
+  "extraction_provider_id": {
+    "type": "string",
+    "_special": "select_provider",
+    "description": "独立记忆提取模型 Provider ID（为空不会调用模型）",
+    "default": ""
+  },
+  "scan_seconds": {
+    "type": "int",
+    "description": "后台队列检查间隔（秒，默认300）",
+    "default": 300,
+    "slider": {
+      "min": 30,
+      "max": 3600,
+      "step": 30
+    }
+  },
+  "message_threshold": {
+    "type": "int",
+    "description": "达到多少条消息触发提取",
+    "default": 20,
+    "slider": {
+      "min": 3,
+      "max": 100,
+      "step": 1
+    }
+  },
+  "max_wait_minutes": {
+    "type": "int",
+    "description": "最早排队消息最长等待（分钟）",
+    "default": 60,
+    "slider": {
+      "min": 5,
+      "max": 180,
+      "step": 5
+    }
+  },
+  "min_batch_messages": {
+    "type": "int",
+    "description": "普通批次最少消息数",
+    "default": 3
+  },
+  "max_batch_messages": {
+    "type": "int",
+    "description": "单次最多消息数",
+    "default": 50
+  },
+  "max_batch_chars": {
+    "type": "int",
+    "description": "单次待提取文本总字符上限",
+    "default": 6000
+  },
+  "max_daily_calls_per_group": {
+    "type": "int",
+    "description": "每群每天模型调用总次数上限（含失败与明确记忆请求）",
+    "default": 12
+  },
+  "max_retrieved_memories": {
+    "type": "int",
+    "description": "每次回答最多召回记忆条数",
+    "default": 6
+  },
+  "max_context_chars": {
+    "type": "int",
+    "description": "记忆注入的总字符上限",
+    "default": 2400
+  },
+  "admin_users": {
+    "type": "list",
+    "description": "可使用记忆工作台的 AstrBot Dashboard 用户名白名单（为空禁止访问）",
+    "default": []
+  },
+  "processed_retention_days": {
+    "type": "int",
+    "description": "已处理消息缓存保留天数",
+    "default": 30
+  },
+  "enable_private_profile_commands": {
+    "type": "bool",
+    "description": "允许用户通过私聊 /wm 命令自主管理共享画像",
+    "default": true
+  }
+}

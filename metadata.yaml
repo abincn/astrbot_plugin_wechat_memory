@@ -1,0 +1,7 @@
+name: astrbot_plugin_wechat_memory
+display_name: 微信长期记忆
+version: 0.1.0
+author: abincn
+desc: PC Hook + AstrBot 微信群独立长期记忆，带跨群个人画像授权、自动提取、检索与后台管理。
+repo: https://github.com/abincn/astrbot_plugin_wechat_memory
+astrbot_version: ">=4.24.0"
