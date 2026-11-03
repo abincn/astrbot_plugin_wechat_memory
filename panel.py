@@ -60,9 +60,13 @@ class MemoryPanel:
             return json_response(data,headers={'Cache-Control':'no-store'})
         except PermissionError:
             return error_response('无权访问此账号/群的数据。',status_code=403)
-        except (ValueError,TypeError,KeyError,sqlite3.Error):
+        except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
+            if payload.get('operation')=='backfill':
+                return error_response('Hook Inbox 补录失败：'+str(exc)[:400],status_code=400)
             return error_response('操作参数、来源或版本无效，请查看群配置及记录状态。',status_code=400)
-        except OSError:
+        except OSError as exc:
+            if payload.get('operation')=='backfill':
+                return error_response('Hook Inbox 文件不可用：'+str(exc)[:400],status_code=503)
             return error_response('数据文件不可用。',status_code=503)
 
     def _scope(self,payload):
