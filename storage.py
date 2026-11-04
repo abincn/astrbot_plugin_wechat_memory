@@ -183,6 +183,10 @@ class MemoryStore:
                     finally:
                         backup.close()
             migrate_v3(self.db)
+            self.db.execute(
+                """UPDATE reanalysis_jobs SET status='paused',
+                   last_error='interrupted_restart',updated_at=?
+                   WHERE status IN ('running','pending')""",(now(),))
 
     @contextlib.contextmanager
     def transaction(self):
