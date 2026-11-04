@@ -199,14 +199,14 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                             max_messages=MIN(max_messages,excluded.max_messages),
                             updated_at=excluded.updated_at""",
                         (*v3_store.key(s),max(1,len(batch)//2),now()))
-            store.finish_run(rid,'failed',error=type(exc).__name__)
-            if not replay_job_id:
-                store.fail_scope(s,type(exc).__name__,
-                                 max(120,int(cfg.get('retry_delay_seconds',600))))
-            logger.exception('[wechat_memory] V3 run failed room=%s',s.room)
             explanation=type(exc).__name__
             if isinstance(exc,(TypeError,ValueError)):
                 explanation+=': '+str(exc)[:140]
+            store.finish_run(rid,'failed',error=explanation)
+            if not replay_job_id:
+                store.fail_scope(s,explanation,
+                                 max(120,int(cfg.get('retry_delay_seconds',600))))
+            logger.exception('[wechat_memory] V3 run failed room=%s',s.room)
             return {'status':'failed','run_id':rid,'reason':explanation}
         finally:
             store.budget_finish(s,estimate,inp,out,purpose='dream',
