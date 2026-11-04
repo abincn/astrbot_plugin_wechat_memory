@@ -18,11 +18,13 @@ SYSTEM = """你是长期存在的微信群的证据整理器，不是个人简�
 输入已有 events/claims 带有服务器给出的 id；同一实体优先复用 existing_id。
 新 events 用临时 ref（如 e1），新 claims 以 event_ref 引用本批新 ref 或已有 event id。
 只输出结构化 JSON；任何 source_message_ids 仅能来自本批 messages。
-可合理输出 0 条 claim，但不能假装没读到某条 message；reviewed_message_ids 必须列出本批每条，
-如有不能确定/无足够输出容量则加入 deferred_message_ids，且 complete=false。
+可合理输出 0 条 claim，但不能假装没读到某条 message。
+coverage.reviewed_count 必须是逐条检查的消息数量（必须覆盖输入消息总数）；
+如有不能确定/无法完整读取的消息，将其真实 message_id 加入 deferred_message_ids，
+并使 complete=false。不要虚构完整性；返回不完整会由程序自动缩小批次。
 最多 events 18 条、claims 40 条；如果达到容量而尚有有用事实，报告 complete=false。
 Schema：
-{"schema_version":3,"coverage":{"reviewed_message_ids":[],"deferred_message_ids":[],"complete":true},
+{"schema_version":3,"coverage":{"reviewed_count":0,"deferred_message_ids":[],"complete":true},
  "events":[{"ref":"e1","existing_id":"","revision":0,"title":"活动标题","event_type":"gathering|project|discussion|other",
  "anchor_date":"","state":"planning|active|completed|cancelled|disputed","summary":"精简摘要",
  "source_message_ids":[]}],
@@ -77,10 +79,15 @@ def parse(text, messages, events, claims):
     coverage=obj.get('coverage')
     if not isinstance(coverage,dict) or type(coverage.get('complete')) is not bool:
         raise ValueError('Invalid V3 coverage')
-    reviewed=_ids(coverage.get('reviewed_message_ids'),mids)
     deferred=_ids(coverage.get('deferred_message_ids'),mids)
-    if set(reviewed) & set(deferred) or set(reviewed)|set(deferred)!=set(mids):
-        raise ValueError('V3 coverage does not match input messages')
+    if 'reviewed_message_ids' in coverage:
+        reviewed=_ids(coverage['reviewed_message_ids'],mids)
+        if set(reviewed)&set(deferred) or set(reviewed)|set(deferred)!=set(mids):
+            raise ValueError('V3 coverage IDs do not match input messages')
+    else:
+        reviewed_count=coverage.get('reviewed_count')
+        if type(reviewed_count) is not int or reviewed_count!=len(mids)-len(deferred):
+            raise ValueError('V3 reviewed count does not cover input messages')
     if not coverage['complete'] or deferred:
         raise ValueError('Incomplete V3 coverage; batch must be retried with fewer messages')
     es=obj.get('events');cs=obj.get('claims')
