@@ -61,6 +61,12 @@ DDL = (
       subject_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
       last_raw_id INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
       PRIMARY KEY(platform,owner,room,subject_id))""",
+    """CREATE TABLE IF NOT EXISTS memory_claim_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,claim_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,previous_content TEXT NOT NULL,
+      previous_status TEXT NOT NULL,actor TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',occurred_at INTEGER NOT NULL)""",
+    """CREATE INDEX IF NOT EXISTS claim_versions_v3 ON memory_claim_versions(claim_id,id DESC)""",
     """CREATE TABLE IF NOT EXISTS v3_run_details (
       run_id TEXT PRIMARY KEY REFERENCES dream_runs(id) ON DELETE CASCADE,
       analyzed INTEGER NOT NULL DEFAULT 0, no_signal INTEGER NOT NULL DEFAULT 0,
