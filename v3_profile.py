@@ -69,7 +69,7 @@ async def consolidate(scheduler,s,member=''):
             'attribution':r['attribution'],'confidence':r['confidence'],
             'revision':r['revision']} for r in relevant]
         # Ensure every available message id in prompt is counted toward coverage.
-        system=PROFILE_SYSTEM+'\n目标成员ID：'+member+'\n本批必须回传的 batch_key：'+v3_extract.batch_coverage_key(rows)
+        system=PROFILE_SYSTEM+'\n目标成员ID：'+member
         prompt=v3_extract.build_prompt(s,rows,[],existing)
         while rows and estimate_tokens(system+prompt)>cap:
             if len(rows)>2:
@@ -95,7 +95,7 @@ async def consolidate(scheduler,s,member=''):
             async with asyncio.timeout(90):
                 response=await scheduler.context.llm_generate(
                     chat_provider_id=cfg['extraction_provider_id'],prompt=prompt,
-                    system_prompt=system,tools=ToolSet())
+                    system_prompt=system+'\n本批必须回传的 batch_key：'+v3_extract.batch_coverage_key(rows),\n                    tools=ToolSet())
             if getattr(response,'role','assistant')!='assistant' or getattr(response,'tools_call_name',None):
                 raise ValueError('Invalid profile response role')
             payload=v3_extract.parse(response.completion_text,rows,[],existing)
