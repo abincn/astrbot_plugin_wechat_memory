@@ -171,6 +171,11 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 pass
             migrate(self.db)
+            # A replay worker cannot survive an AstrBot process restart.
+            self.db.execute(
+                """UPDATE reanalysis_jobs SET status='paused',
+                   last_error='AstrBot 已重启，请手动继续任务',updated_at=?
+                   WHERE status IN ('running','pending')""",(now(),))
 
     @contextlib.contextmanager
     def transaction(self):
@@ -623,6 +628,11 @@ class MemoryStore:
                 DO UPDATE SET disabled=excluded.disabled,changed_at=excluded.changed_at''',
                 (*self._key(s),user,int(disabled),now()))
             if disabled:
+            # Preview summaries may contain user-derived information.
+            self.db.execute(
+                """DELETE FROM dream_run_previews WHERE run_id IN (
+                   SELECT id FROM dream_runs WHERE platform=? AND owner=? AND room=?)""",
+                self._key(s))
                 self.db.execute(
                     """UPDATE observation_signals SET status='invalidated',content='',
                        updated_at=? WHERE platform=? AND owner=? AND room=?
@@ -669,6 +679,11 @@ class MemoryStore:
                 if linked.intersection(erased_ids):
                     self.db.execute('''UPDATE dream_candidates SET old_content='',new_content='',reason='',
                         sources_json='[]',status='redacted',error='source_erasure' WHERE id=?''',(candidate['id'],))
+            # Preview summaries may contain user-derived information.
+            self.db.execute(
+                """DELETE FROM dream_run_previews WHERE run_id IN (
+                   SELECT id FROM dream_runs WHERE platform=? AND owner=? AND room=?)""",
+                self._key(s))
             # Redact derivative texts containing the user's source evidence before
             # cascading deletion of the raw source links.
             self.db.execute(
@@ -757,6 +772,33 @@ class MemoryStore:
                 (run_id, *self._key(s))).fetchone()
             return dict(r) if r else None
 
+
+    def v2_run_preview(self, s: Scope, run_id: str) -> dict | None:
+        with self._lock:
+            record=self.db.execute(
+                """SELECT p.payload_json FROM dream_run_previews p
+                   JOIN dream_runs r ON r.id=p.run_id
+                   WHERE p.run_id=? AND r.platform=? AND r.owner=? AND r.room=?""",
+                (run_id,*self._key(s))).fetchone()
+            return json.loads(record['payload_json']) if record else None
+
+    def v2_source_rows(self,s:Scope,source_type:str,entity_id:str,limit:int=40)->list[dict]:
+        if source_type not in ('topic','observation'):
+            raise ValueError('Unsupported source type')
+        relation,pk=('topic_sources','topic_id') if source_type=='topic' else (
+            'observation_sources','observation_id')
+        parent='topic_states' if source_type=='topic' else 'observation_signals'
+        with self._lock:
+            valid=self.db.execute(
+                f"""SELECT id FROM {parent} WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (entity_id,*self._key(s))).fetchone()
+            if not valid:raise ValueError('记录不存在或不属于当前群')
+            return [dict(r) for r in self.db.execute(
+                f"""SELECT m.message_id,m.sender_id,m.message_at,substr(m.text,1,1800) AS text
+                    FROM {relation} x JOIN raw_messages m ON m.id=x.raw_id
+                    WHERE x.{pk}=? AND m.platform=? AND m.owner=? AND m.room=?
+                    ORDER BY m.id DESC LIMIT ?""",
+                (entity_id,*self._key(s),min(80,max(1,limit))))]
 
     def replay_prepare(self, s: Scope, start: int, end: int) -> dict:
         with self._lock:
