@@ -138,6 +138,8 @@ class MemoryPanel:
         except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
             if payload.get('operation')=='backfill':
                 return error_response('Hook Inbox 补录失败：'+str(exc)[:400],status_code=400)
+            if str(payload.get('operation','')).startswith('replay_'):
+                return error_response('历史重分析：'+str(exc)[:200],status_code=400)
             return error_response('操作参数、来源或版本无效，请查看群配置及记录状态。',status_code=400)
         except OSError as exc:
             if payload.get('operation')=='backfill':
