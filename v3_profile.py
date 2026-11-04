@@ -20,7 +20,7 @@ PROFILE_SYSTEM = """你负责老微信群的单个成员画像巩固。成员不
 对同一成员已有的等价 claims，优先更新 existing_id；不要为凑数新增。
 只输出 JSON schema_version=3，events=[]，
 claims 为针对指定 subject_id 的少量稳定画像，source_message_ids 必须来自提供的消息，
-并严格说明 attribution。所有 messages 列在 coverage.reviewed_message_ids，
+并严格说明 attribution。coverage.reviewed_count 应等于输入 messages 数量，
 deferred_message_ids=[]，complete=true。
 claim_type 可以是 person_fact、preference、behavior_pattern、relation_claim、third_party_statement。
 最多生成 12 条，本次没有足够的稳定信息则可为 []。
