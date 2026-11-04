@@ -371,3 +371,15 @@ def claim_versions(store,s,ident,limit=60):
             """SELECT revision,previous_content,previous_status,actor,reason,occurred_at
                FROM memory_claim_versions WHERE claim_id=? ORDER BY id DESC LIMIT ?""",
             (ident,max(1,min(limit,100))))]
+
+
+def event_sources(store,s,event_id,limit=80):
+    with store._lock:
+        if not _in_scope(store.db,s,'memory_events',event_id):
+            raise ValueError('Event is outside this group')
+        return [dict(r) for r in store.db.execute(
+            """SELECT r.message_id,r.sender_id,r.message_at,r.text
+               FROM event_evidence e JOIN raw_messages r ON r.id=e.raw_id
+               WHERE e.event_id=? AND r.platform=? AND r.owner=? AND r.room=?
+               ORDER BY r.message_at DESC LIMIT ?""",
+            (event_id,*key(s),max(1,min(limit,100))))]
