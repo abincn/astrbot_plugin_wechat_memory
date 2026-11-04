@@ -1,0 +1,311 @@
+"""Dreaming V3 transactional event, claim and evidence repository.
+
+The raw archive and legacy manual memories remain independent and untouched.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+
+from .storage import now
+
+
+def key(s):
+    return s.platform,s.owner,s.room
+
+
+def context(store,s,senders,*,event_limit=14,claim_limit=60):
+    with store._lock:
+        events=[dict(r) for r in store.db.execute(
+            """SELECT id,title,event_type,anchor_date,state,summary,revision
+               FROM memory_events WHERE platform=? AND owner=? AND room=?
+               ORDER BY updated_at DESC LIMIT ?""",(*key(s),event_limit))]
+        members=sorted(x for x in senders if not store.is_opted_out(s,x))[:60]
+        conditions="subject_type!='member'"
+        if members:
+            placeholders=','.join('?' for _ in members)
+            conditions+=f" OR (subject_type='member' AND subject_id IN ({placeholders}))"
+        claims=[dict(r) for r in store.db.execute(
+            f"""SELECT id,event_id,subject_type,subject_id,claim_type,predicate,content,
+                       attribution,confidence,sensitivity,revision
+                FROM memory_claims WHERE platform=? AND owner=? AND room=?
+                AND status IN ('active','candidate','review') AND ({conditions})
+                ORDER BY updated_at DESC LIMIT ?""",
+            (*key(s),*members,claim_limit))]
+        return events,claims
+
+
+def _in_scope(db,s,table,ident):
+    return db.execute(
+        f"SELECT * FROM {table} WHERE id=? AND platform=? AND owner=? AND room=?",
+        (ident,*key(s))).fetchone()
+
+
+def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_job_id=''):
+    """One atomic event/claim/evidence/ledger/cursor commit. Caller owns model budget."""
+    raw={m['message_id']:m for m in messages}
+    ids=[m['id'] for m in messages]
+    changed_events=changed_claims=added_sources=0
+    with store.transaction():
+        if replay_job_id:
+            job=store.db.execute(
+                """SELECT status,next_raw_id FROM reanalysis_jobs
+                   WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (replay_job_id,*key(s))).fetchone()
+            if not job or job['status']!='running' or int(job['next_raw_id'])!=cursor+1:
+                raise RuntimeError('History job position changed')
+        else:
+            state=store.db.execute(
+                """SELECT dream_cursor FROM room_state
+                   WHERE platform=? AND owner=? AND room=?""",key(s)).fetchone()
+            if not state or int(state['dream_cursor'])!=cursor:
+                raise RuntimeError('Production cursor changed')
+
+        links={}
+        # Preview persists only the proposed JSON and independent job progress.
+        if not dry_run:
+            for item in proposal['events']:
+                ident=item.get('existing_id') or ''
+                source=[raw[x] for x in item['source_message_ids']]
+                times=[m['message_at'] for m in source]
+                if ident:
+                    row=_in_scope(store.db,s,'memory_events',ident)
+                    if not row:raise ValueError('Unknown event in committed scope')
+                elif item.get('anchor_date'):
+                    # Exact event title AND explicit date, never merging unrelated gatherings.
+                    row=store.db.execute(
+                        """SELECT * FROM memory_events WHERE platform=? AND owner=? AND room=?
+                           AND title=? AND anchor_date=? AND event_type=?
+                           ORDER BY updated_at DESC LIMIT 1""",
+                        (*key(s),item['title'],item['anchor_date'],item['event_type'])).fetchone()
+                    if row:ident=row['id']
+                if ident:
+                    store.db.execute(
+                        """UPDATE memory_events SET summary=?,state=?,last_seen=MAX(last_seen,?),
+                           updated_at=?,revision=revision+1
+                           WHERE id=? AND platform=? AND owner=? AND room=?""",
+                        (item['summary'],item['state'],max(times),now(),ident,*key(s)))
+                else:
+                    ident=uuid.uuid4().hex
+                    store.db.execute(
+                        """INSERT INTO memory_events
+                           (id,platform,owner,room,title,event_type,anchor_date,state,summary,
+                            first_seen,last_seen,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (ident,*key(s),item['title'],item['event_type'],
+                         item.get('anchor_date',''),item['state'],item['summary'],
+                         min(times),max(times),now(),now()))
+                links[item.get('ref') or ident]=ident
+                links[ident]=ident
+                for m in source:
+                    cur=store.db.execute(
+                        'INSERT OR IGNORE INTO event_evidence(event_id,raw_id) VALUES(?,?)',
+                        (ident,m['id']))
+                    added_sources+=cur.rowcount
+                changed_events+=1
+
+            for item in proposal['claims']:
+                subject=item.get('subject_id','')
+                if item['subject_type']=='member' and store.is_opted_out(s,subject):
+                    continue
+                evidence=[raw[mid] for mid in item['source_message_ids']]
+                if item['attribution']=='self_statement' and (
+                    item['subject_type']!='member' or any(m['sender_id']!=subject for m in evidence)):
+                    raise ValueError('Invalid own-author claim')
+                if item['attribution']=='observed_behavior' and item['subject_type']=='member':
+                    if not any(m['sender_id']==subject for m in evidence):
+                        raise ValueError('Unsubstantiated behavior')
+                event_ref=item.get('event_ref','')
+                event_id=links.get(event_ref,event_ref) if event_ref else None
+                if event_id and not _in_scope(store.db,s,'memory_events',event_id):
+                    raise ValueError('Cross-group event')
+                ident=item.get('existing_id','')
+                if ident:
+                    row=_in_scope(store.db,s,'memory_claims',ident)
+                    if not row:raise ValueError('Cross-group claim')
+                    if row['subject_type']!=item['subject_type'] or row['subject_id']!=subject or row['claim_type']!=item['claim_type']:
+                        raise ValueError('Claim identity changed')
+                else:
+                    row=store.db.execute(
+                        """SELECT * FROM memory_claims WHERE platform=? AND owner=? AND room=?
+                           AND subject_type=? AND subject_id=? AND claim_type=? AND
+                           predicate=? AND content=? AND COALESCE(event_id,'')=?
+                           ORDER BY updated_at DESC LIMIT 1""",
+                        (*key(s),item['subject_type'],subject,item['claim_type'],
+                         item['predicate'],item['content'],event_id or '')).fetchone()
+                    if row:ident=row['id']
+                times=[m['message_at'] for m in evidence]
+                sensitivity=item['sensitivity']
+                policy='restricted_output' if sensitivity=='restricted' else 'contextual'
+                confidence=item['confidence']
+                status='active' if confidence in ('confirmed','supported') else 'candidate'
+                if item['attribution']=='third_party_statement' and confidence=='confirmed':
+                    confidence='reported';status='candidate'
+                if ident:
+                    # Do not silently overwrite an edited or retracted record.
+                    row=_in_scope(store.db,s,'memory_claims',ident)
+                    if row['status'] in ('retracted','superseded'):continue
+                    if row['content']!=item['content'] or row['confidence']!=confidence:
+                        if row['content']!=item['content']:
+                            status='review' # conflicting update requires review
+                        store.db.execute(
+                            """UPDATE memory_claims SET confidence=?,status=?,
+                               last_supported=MAX(last_supported,?),updated_at=?,
+                               revision=revision+1 WHERE id=?""",
+                            (confidence,status,max(times),now(),ident))
+                    else:
+                        store.db.execute(
+                            'UPDATE memory_claims SET last_supported=MAX(last_supported,?),updated_at=? WHERE id=?',
+                            (max(times),now(),ident))
+                else:
+                    ident=uuid.uuid4().hex
+                    store.db.execute(
+                        """INSERT INTO memory_claims
+                           (id,platform,owner,room,event_id,subject_type,subject_id,
+                            claim_type,predicate,content,attribution,speaker_id,confidence,
+                            sensitivity,use_policy,status,first_seen,last_supported,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (ident,*key(s),event_id,item['subject_type'],subject,item['claim_type'],
+                         item['predicate'],item['content'],item['attribution'],
+                         item.get('speaker_id',''),confidence,sensitivity,policy,status,
+                         min(times),max(times),now(),now()))
+                relation='reported' if item['attribution']=='third_party_statement' else 'support'
+                for m in evidence:
+                    cur=store.db.execute(
+                        'INSERT OR IGNORE INTO claim_evidence(claim_id,raw_id,relation) VALUES(?,?,?)',
+                        (ident,m['id'],relation))
+                    added_sources+=cur.rowcount
+                if item['subject_type']=='member':
+                    store.db.execute(
+                        """INSERT INTO consolidation_queue(platform,owner,room,subject_id,status,last_raw_id,updated_at)
+                           VALUES(?,?,?,?,'pending',?,?)
+                           ON CONFLICT(platform,owner,room,subject_id) DO UPDATE SET
+                            status='pending',last_raw_id=MAX(last_raw_id,excluded.last_raw_id),
+                            updated_at=excluded.updated_at""",
+                        (*key(s),subject,max(m['id'] for m in evidence),now()))
+                changed_claims+=1
+
+            sourced={mid for e in proposal['events'] for mid in e['source_message_ids']}
+            sourced.update(mid for c in proposal['claims'] for mid in c['source_message_ids'])
+            for m in messages:
+                result='analyzed_with_evidence' if m['message_id'] in sourced else 'analyzed_no_signal'
+                store.db.execute(
+                    """INSERT INTO analysis_ledger
+                       (platform,owner,room,raw_id,pipeline_version,result,reason,run_id,updated_at)
+                       VALUES(?,?,?,?,3,?,'',?,?)
+                       ON CONFLICT(platform,owner,room,raw_id,pipeline_version) DO UPDATE SET
+                         result=excluded.result,reason=excluded.reason,
+                         run_id=excluded.run_id,updated_at=excluded.updated_at""",
+                    (*key(s),m['id'],result,run_id,now()))
+
+        if replay_job_id:
+            cur=store.db.execute(
+                """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
+                   messages_scanned=messages_scanned+?,updated_at=?
+                   WHERE id=? AND platform=? AND owner=? AND room=?
+                   AND status='running' AND next_raw_id=?""",
+                (end+1,len(messages),now(),replay_job_id,*key(s),cursor+1))
+            if cur.rowcount!=1:raise RuntimeError('History job changed during commit')
+        elif not dry_run:
+            cur=store.db.execute(
+                """UPDATE room_state SET dream_cursor=?,last_success=?,next_attempt=0,last_error=''
+                   WHERE platform=? AND owner=? AND room=? AND dream_cursor=?""",
+                (end,now(),*key(s),cursor))
+            if cur.rowcount!=1:raise RuntimeError('Production cursor changed during V3 commit')
+        summary={
+            'events':changed_events,'claims':changed_claims,
+            'sources':added_sources,'analyzed':len(messages),
+            'no_signal':len(messages)-len({mid for e in proposal['events'] for mid in e['source_message_ids']}
+                |{mid for c in proposal['claims'] for mid in c['source_message_ids']}),
+        }
+        store.db.execute(
+            """INSERT INTO v3_run_details
+               (run_id,analyzed,no_signal,events_written,claims_written,sources_added,mode,preview_json)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (run_id,summary['analyzed'],summary['no_signal'],changed_events,changed_claims,
+             added_sources,'replay_preview' if dry_run and replay_job_id else
+             'preview' if dry_run else 'replay_apply' if replay_job_id else 'live',
+             json.dumps(proposal,ensure_ascii=False)[:100000] if dry_run else ''))
+        store.db.execute(
+            """UPDATE dream_runs SET status=?,changes_count=?,finished_at=? WHERE id=?""",
+            ('preview' if dry_run else 'committed',changed_claims,now(),run_id))
+        return summary
+
+
+def profiles(store,s,limit=150,member=''):
+    with store._lock:
+        clause=' AND subject_id=?' if member else ''
+        rows=store.db.execute(
+            """SELECT * FROM memory_claims
+               WHERE platform=? AND owner=? AND room=?
+                 AND subject_type='member' AND status IN ('active','candidate','review')"""
+            +clause+" ORDER BY last_supported DESC LIMIT ?",
+            (*key(s),*((member,) if member else ()),max(1,min(limit,200)))).fetchall()
+        return [dict(x) for x in rows if not store.is_opted_out(s,x['subject_id'])]
+
+
+def events(store,s,limit=100):
+    with store._lock:
+        return [dict(x) for x in store.db.execute(
+            'SELECT * FROM memory_events WHERE platform=? AND owner=? AND room=? ORDER BY updated_at DESC LIMIT ?',
+            (*key(s),max(1,min(limit,200))))]
+
+
+def claims(store,s,limit=150,event_id='',subject=''):
+    with store._lock:
+        conditions=['platform=?','owner=?','room=?']
+        args=list(key(s))
+        if event_id:conditions.append('event_id=?');args.append(event_id)
+        if subject:conditions.append("subject_type='member' AND subject_id=?");args.append(subject)
+        sql='SELECT * FROM memory_claims WHERE '+' AND '.join(conditions)+' ORDER BY updated_at DESC LIMIT ?'
+        rows=[dict(r) for r in store.db.execute(sql,(*args,max(1,min(limit,250))))]
+        return [x for x in rows if x['subject_type']!='member' or not store.is_opted_out(s,x['subject_id'])]
+
+
+def sources(store,s,claim_id,limit=80):
+    with store._lock:
+        if not _in_scope(store.db,s,'memory_claims',claim_id):raise ValueError('Claim not in this group')
+        return [dict(r) for r in store.db.execute(
+            """SELECT r.message_id,r.sender_id,r.message_at,r.text,x.relation
+               FROM claim_evidence x JOIN raw_messages r ON r.id=x.raw_id
+               WHERE x.claim_id=? AND r.platform=? AND r.owner=? AND r.room=?
+               ORDER BY r.message_at DESC LIMIT ?""",
+            (claim_id,*key(s),max(1,min(limit,100))))]
+
+
+def coverage(store,s):
+    with store._lock:
+        return [dict(r) for r in store.db.execute(
+            """SELECT result,COUNT(*) count FROM analysis_ledger
+               WHERE platform=? AND owner=? AND room=? AND pipeline_version=3
+               GROUP BY result""",key(s))]
+
+
+def stats(store,s):
+    with store._lock:
+        return {
+            'events':store.db.execute('SELECT COUNT(*) FROM memory_events WHERE platform=? AND owner=? AND room=?',key(s)).fetchone()[0],
+            'claims':store.db.execute('SELECT COUNT(*) FROM memory_claims WHERE platform=? AND owner=? AND room=?',key(s)).fetchone()[0],
+            'profiles':store.db.execute("""SELECT COUNT(DISTINCT subject_id) FROM memory_claims
+               WHERE platform=? AND owner=? AND room=? AND subject_type='member'
+               AND status='active'""",key(s)).fetchone()[0],
+            'pending_consolidation':store.db.execute("""SELECT COUNT(*) FROM consolidation_queue
+               WHERE platform=? AND owner=? AND room=? AND status='pending'""",key(s)).fetchone()[0],
+            'coverage':coverage(store,s),
+        }
+
+
+def erase_member(store,s,user):
+    """Called from the existing per-room erase path, in its existing transaction."""
+    store.db.execute('DELETE FROM memory_claims WHERE platform=? AND owner=? AND room=? AND subject_type=? AND subject_id=?',
+                     (*key(s),'member',user))
+    store.db.execute('DELETE FROM consolidation_queue WHERE platform=? AND owner=? AND room=? AND subject_id=?',
+                     (*key(s),user))
+    # Remove any claim whose evidence vanished after raw-message deletion.
+    store.db.execute(
+        """UPDATE memory_claims SET status='review',updated_at=?,revision=revision+1
+           WHERE platform=? AND owner=? AND room=?
+           AND status IN ('active','candidate') AND
+           NOT EXISTS(SELECT 1 FROM claim_evidence e WHERE e.claim_id=memory_claims.id)""",
+        (now(),*key(s)))
