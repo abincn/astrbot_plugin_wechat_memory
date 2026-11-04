@@ -196,7 +196,7 @@ def _write_v2(store,s,topics,observations,messages):
 
 
 def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_run=False,max_changes=8,
-          v2=None, existing_topics=(), existing_observations=()):
+          v2=None, existing_topics=(), existing_observations=(), replay_job_id=''):
     """All DB writes (including success cursor) are one atomic commit. No calls to LLM."""
     parsed=_validated(s,changes,messages,existing,max_changes)
     v2_parts = _validate_v2(s,v2,messages,existing_topics,existing_observations) if v2 is not None else None
@@ -210,7 +210,15 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
     with store.transaction():
         state=store.db.execute('''SELECT dream_cursor FROM room_state WHERE platform=? AND owner=? AND room=?''',
             store._key(s)).fetchone()
-        if not state or state['dream_cursor']!=from_cursor:raise RuntimeError('Stale Dreaming cursor')
+        if replay_job_id:
+            job=store.db.execute(
+                """SELECT next_raw_id,status FROM reanalysis_jobs WHERE id=?
+                   AND platform=? AND owner=? AND room=?""",
+                (replay_job_id,*store._key(s))).fetchone()
+            if not job or job['status']!='running' or job['next_raw_id']!=from_cursor+1:
+                raise RuntimeError('History replay position changed')
+        elif not state or state['dream_cursor']!=from_cursor:
+            raise RuntimeError('Stale Dreaming cursor')
         t_written = o_written = 0
         if v2_parts is not None and not dry_run:
             t_written,o_written=_write_v2(store,s,*v2_parts,messages)
@@ -261,7 +269,15 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                  (cid,run_id,c['index'],c['op'],c['target'],c['subject'],c['scope'],previous,c['content'],
                   c['reason'],json.dumps(c['refs'],ensure_ascii=False),c['revision'],status,applied_id,now()))
-        if not dry_run:
+        if replay_job_id:
+            cur=store.db.execute(
+                """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
+                   messages_scanned=messages_scanned+?,updated_at=?
+                   WHERE id=? AND platform=? AND owner=? AND room=? AND status='running'
+                   AND next_raw_id=?""",
+                (to_cursor+1,len(messages),now(),replay_job_id,*store._key(s),from_cursor+1))
+            if cur.rowcount!=1:raise RuntimeError('History job changed')
+        elif not dry_run:
             store.db.execute('''UPDATE room_state SET dream_cursor=?,last_success=?,next_attempt=0,last_error=''
                 WHERE platform=? AND owner=? AND room=? AND dream_cursor=?''',
                 (to_cursor,now(),*store._key(s),from_cursor))
@@ -270,7 +286,7 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
                 """INSERT INTO dream_run_details(run_id,mode,analyzed_messages,topics_written,
                    observations_written,proposals,outcome,empty_reason)
                    VALUES(?,?,?,?,?,?,?,?)""",
-                (run_id,'preview' if dry_run else 'live',len(messages),
+                (run_id,('replay_preview' if dry_run else 'replay_apply') if replay_job_id else ('preview' if dry_run else 'live'),len(messages),
                  t_written if not dry_run else len(v2_parts[0]),
                  o_written if not dry_run else len(v2_parts[1]),len(parsed),
                  'promoted' if changed else 'observed' if v2_parts[1] or v2_parts[0]
