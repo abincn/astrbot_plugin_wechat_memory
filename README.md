@@ -1,6 +1,14 @@
-# AstrBot WeChat Memory — v0.4.0-beta.2
+# AstrBot WeChat Memory — v0.4.0-beta.3
 
 > **Dreaming V3 重构预览版（beta.2）。** Event / Claim / Evidence 是新的统一信息模型；Profile 为成员视图。已提交源码，但**未在真实 AstrBot / Hook / Provider / Dashboard 实机运行验证**，不能视为正式稳定版。不新增测试代码；必须先使用数据库副本进行人工验收。
+
+## beta.3 历史预览覆盖校验修复
+
+- 修复模型把 `reviewed_count` 填成 0 或其他错误数量后，预览任务持续报 `V3 reviewed count does not cover input messages` 的问题。
+- 旧协议让模型自己数消息，并在 JSON 示例中硬编码 `0`；新协议由服务端生成每批消息的 `batch_coverage_key`，模型原样回传，服务器验证正确批次与原始消息证据。
+- 仍严格检查 `coverage.complete`、`deferred_message_ids`、来源消息 ID 和群作用域；不完整结果不会推进游标。
+- 历史预览、正式重分析均允许在覆盖异常时缩小批次自动重试（最多额外两次），仍不完整则暂停，保留断点。
+- 旧任务无需删除，升级后点击“恢复任务”。模型重试仍消耗每日调用预算。
 
 ## beta.2 工作台与配置
 
