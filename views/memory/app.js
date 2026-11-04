@@ -284,8 +284,11 @@ async function renderDetail(){
       const rejected=Array.isArray(preview?.rejected_claims)?preview.rejected_claims:[];
       if(rejected.length){
         const affected=new Set(rejected.flatMap(item=>item.source_message_ids||[]));
+        const previewOnly=String(row.v3_detail?.mode||'').includes('preview');
         box.append(el('p','本轮有 '+rejected.length+' 条主张的身份或来源无法确认，涉及 '
-          +affected.size+' 条原始消息；这些消息已标记为待重分析，未当作本人事实保存。','inline-warning'));
+          +affected.size+' 条原始消息；'
+          +(previewOnly?'当前仅预览，不修改消息状态。':'已在消息分析账本标记待重分析。')
+          +'这些主张没有被当作本人事实保存。','inline-warning'));
         box.append(el('h4','需要重新核对的来源'));
         for(const item of rejected.slice(0,20)){
           box.append(sourceCard(item.content||'未采纳的提取提案',
