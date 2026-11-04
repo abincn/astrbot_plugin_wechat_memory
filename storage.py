@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 from .identity import Scope
+from .schema_v3 import migrate
 from .policy import fingerprint, safe_content, topic_key
 
 
@@ -154,7 +155,6 @@ class MemoryStore:
               raw_ids TEXT NOT NULL, chars INTEGER NOT NULL,
               mode TEXT NOT NULL, created_at INTEGER NOT NULL
             );
-            PRAGMA user_version=2;
             ''')
             self._fts = False
             try:
@@ -170,6 +170,7 @@ class MemoryStore:
                 self._fts = True
             except sqlite3.OperationalError:
                 pass
+            migrate(self.db)
 
     @contextlib.contextmanager
     def transaction(self):
@@ -676,3 +677,55 @@ class MemoryStore:
                (now(),*self._key(s)))
         self.refresh_snapshot(s,'')
         return {'raw_removed':erased,'profile_removed':len(memories)}
+
+    # Dreaming V2: all queries remain scoped to the bot account and group.
+    def v2_context(self, s: Scope, senders: set[str], topic_limit: int = 8,
+                   observation_limit: int = 24) -> tuple[list[dict], list[dict]]:
+        with self._lock:
+            topics = [dict(r) for r in self.db.execute(
+                """SELECT id,title,summary,state,revision FROM topic_states
+                   WHERE platform=? AND owner=? AND room=?
+                   ORDER BY last_message_at DESC LIMIT ?""",
+                (*self._key(s), min(12, max(1, topic_limit))))]
+            users = sorted(sender for sender in senders if not self.is_opted_out(s, sender))
+            if users:
+                placeholders = ','.join('?' for _ in users[:60])
+                query = ("""SELECT id,scope,subject_id,signal_type,content,evidence_type,
+                            status,revision,topic_id FROM observation_signals
+                            WHERE platform=? AND owner=? AND room=? AND status='observing'
+                            AND (scope='group' OR subject_id IN (""" + placeholders +
+                         """)) ORDER BY updated_at DESC LIMIT ?""")
+                params = (*self._key(s), *users[:60], min(40, max(1, observation_limit)))
+            else:
+                query = """SELECT id,scope,subject_id,signal_type,content,evidence_type,
+                           status,revision,topic_id FROM observation_signals
+                           WHERE platform=? AND owner=? AND room=? AND status='observing'
+                           AND scope='group' ORDER BY updated_at DESC LIMIT ?"""
+                params = (*self._key(s), min(40, max(1, observation_limit)))
+            observations = [dict(r) for r in self.db.execute(query, params)]
+            return topics, observations
+
+    def list_topics(self, s: Scope, limit: int = 50) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.db.execute(
+                """SELECT t.*,(SELECT COUNT(*) FROM topic_sources x WHERE x.topic_id=t.id) source_count
+                   FROM topic_states t WHERE platform=? AND owner=? AND room=?
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (*self._key(s), min(100, max(1, limit))))]
+
+    def list_observations(self, s: Scope, limit: int = 100) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.db.execute(
+                """SELECT o.*,(SELECT COUNT(*) FROM observation_sources x
+                   WHERE x.observation_id=o.id) source_count
+                   FROM observation_signals o WHERE platform=? AND owner=? AND room=?
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (*self._key(s), min(200, max(1, limit))))]
+
+    def v2_run_detail(self, s: Scope, run_id: str) -> dict | None:
+        with self._lock:
+            r = self.db.execute(
+                """SELECT d.* FROM dream_run_details d JOIN dream_runs r ON r.id=d.run_id
+                   WHERE r.id=? AND r.platform=? AND r.owner=? AND r.room=?""",
+                (run_id, *self._key(s))).fetchone()
+            return dict(r) if r else None
