@@ -733,14 +733,20 @@ class MemoryStore:
             if users:
                 placeholders = ','.join('?' for _ in users[:60])
                 query = ("""SELECT id,scope,subject_id,signal_type,content,evidence_type,
-                            status,revision,topic_id FROM observation_signals
+                            status,revision,topic_id,
+                            (SELECT COUNT(*) FROM observation_sources o
+                             WHERE o.observation_id=observation_signals.id) AS source_count
+                            FROM observation_signals
                             WHERE platform=? AND owner=? AND room=? AND status='observing'
                             AND (scope='group' OR subject_id IN (""" + placeholders +
                          """)) ORDER BY updated_at DESC LIMIT ?""")
                 params = (*self._key(s), *users[:60], min(40, max(1, observation_limit)))
             else:
                 query = """SELECT id,scope,subject_id,signal_type,content,evidence_type,
-                           status,revision,topic_id FROM observation_signals
+                           status,revision,topic_id,
+                           (SELECT COUNT(*) FROM observation_sources o
+                            WHERE o.observation_id=observation_signals.id) AS source_count
+                           FROM observation_signals
                            WHERE platform=? AND owner=? AND room=? AND status='observing'
                            AND scope='group' ORDER BY updated_at DESC LIMIT ?"""
                 params = (*self._key(s), min(40, max(1, observation_limit)))
