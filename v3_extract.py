@@ -23,10 +23,10 @@ SYSTEM = """你是长期存在的微信群的证据整理器，不是个人简�
 最多 events 18 条、claims 40 条；如果达到容量而尚有有用事实，报告 complete=false。
 Schema：
 {"schema_version":3,"coverage":{"reviewed_message_ids":[],"deferred_message_ids":[],"complete":true},
- "events":[{"ref":"e1","existing_id":"","title":"活动标题","event_type":"gathering|project|discussion|other",
+ "events":[{"ref":"e1","existing_id":"","revision":0,"title":"活动标题","event_type":"gathering|project|discussion|other",
  "anchor_date":"","state":"planning|active|completed|cancelled|disputed","summary":"精简摘要",
  "source_message_ids":[]}],
- "claims":[{"existing_id":"","event_ref":"e1 或已有 event id 或空","subject_type":"group|member|event",
+ "claims":[{"existing_id":"","revision":0,"event_ref":"e1 或已有 event id 或空","subject_type":"group|member|event",
  "subject_id":"member 时填写输入原始 sender_id，否则空",
  "claim_type":"person_fact|preference|behavior_pattern|relation_claim|group_decision|task|event_detail|topic_context|third_party_statement",
  "predicate":"简短标准字段，如 attendance_check",
@@ -86,7 +86,7 @@ def parse(text, messages, events, claims):
     es=obj.get('events');cs=obj.get('claims')
     if not isinstance(es,list) or not isinstance(cs,list) or len(es)>18 or len(cs)>40:
         raise ValueError('V3 proposal limit exceeded')
-    existing_events={e['id'] for e in events}
+    existing_events={e['id']:e for e in events}
     existing_claims={c['id']:c for c in claims}
     refs=set(existing_events)
     for e in es:
@@ -94,6 +94,8 @@ def parse(text, messages, events, claims):
         identity=e.get('existing_id','')
         ref=e.get('ref','')
         if identity and identity not in existing_events:raise ValueError('Unknown event')
+        if identity and e.get('revision') != existing_events[identity]['revision']:
+            raise ValueError('Stale event revision')
         if not isinstance(ref,str) or (ref and (len(ref)>40 or not re.fullmatch('[a-zA-Z0-9_-]+',ref) or ref in refs)):
             raise ValueError('Invalid event reference')
         if not identity and not ref:raise ValueError('New event missing ref')
@@ -111,6 +113,8 @@ def parse(text, messages, events, claims):
         if not isinstance(c,dict):raise ValueError('Invalid claim')
         ident=c.get('existing_id','')
         if ident and ident not in existing_claims:raise ValueError('Unknown claim')
+        if ident and c.get('revision') != existing_claims[ident]['revision']:
+            raise ValueError('Stale claim revision')
         ref=c.get('event_ref','')
         if not isinstance(ref,str) or (ref and ref not in refs):raise ValueError('Invalid claim event link')
         if c.get('subject_type') not in ('group','member','event') or c.get('claim_type') not in CLAIM_TYPES:
