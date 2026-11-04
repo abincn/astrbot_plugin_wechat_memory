@@ -46,6 +46,7 @@ class MemoryPanel:
 
     async def _replay_worker(self,s,job_id):
         try:
+            coverage_retries=0
             while self.active:
                 job=self.store.replay_job(s,job_id)
                 if not job or job['status']!='running':return
@@ -58,7 +59,18 @@ class MemoryPanel:
                 if not current or current['status']!='running':
                     return
                 if result['status'] in ('committed','preview','empty'):
+                    coverage_retries=0
                     continue
+                if result['status']=='retryable':
+                    coverage_retries+=1
+                    if coverage_retries<=2:
+                        # Source cursor is unchanged; V3 will reread a smaller batch.
+                        # Each attempt consumes real model quota, so retries are bounded.
+                        continue
+                    self.store.replay_status(
+                        s,job_id,'paused',
+                        str(result.get('reason','覆盖校验不完整'))+'；本轮自动缩批重试已达上限')
+                    return
                 status='paused' if result['status'] in ('busy','budget_exceeded','oversize','insufficient') else 'failed'
                 self.store.replay_status(s,job_id,status,str(result.get('reason',result['status'])))
                 return
