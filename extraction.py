@@ -102,6 +102,7 @@ changes 继续遵守 v1 的正式记忆变更协议，op=add|revise|supersede|re
 subject_id，kind=fact|decision|context|preference|profile，topic_key，content，
 source_message_ids，certainty=explicit|uncertain，evidence_type=self_report|group_decision|other，reason；
 revise/supersede 额外引用输入已有 memory_id 和 expected_revision。
+若 add 正式记忆是在晋升输入 observation_context 中的已有观察，可额外带 observation_id（必须是所提供的原 ID）；否则省略。
 每个 source_message_id 必须来自输入 new_events；不准引用未给出的消息。
 topics 最多 8 项，observations 最多 12 项，changes 最多 8 项。
 没有合格正式记忆时可以 changes=[]，但应保留有证据的观察。
