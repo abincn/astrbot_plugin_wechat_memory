@@ -255,6 +255,15 @@ class MemoryPanel:
         if op=='export':
             rows=self.store.list_memories(s,limit=200)
             for row in rows:row['sources']=self.store.sources(s,row['id'])
-            return {'scope':dict(platform=s.platform,owner=s.owner,room=s.room),'items':rows,
-                    'note':'Current group only; no global private profile or cross-group content.'}
+            from . import v3_store
+            claims=v3_store.claims(self.store,s,limit=250)
+            events=v3_store.events(self.store,s,limit=200)
+            return {
+                'scope':dict(platform=s.platform,owner=s.owner,room=s.room),
+                'legacy_memories':rows,
+                'v3_events':events,
+                'v3_claims':claims,
+                'v3_coverage':v3_store.coverage(self.store,s),
+                'note':'Administrator-only current group export, including restricted personal context; no cross-group/global data.',
+            }
         raise ValueError('Unsupported action')
