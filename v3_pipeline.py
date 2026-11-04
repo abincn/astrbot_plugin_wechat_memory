@@ -111,6 +111,12 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         else:
             cursor=0;end_limit=None
         max_messages=max(1,min(500,int(cfg.get('max_messages_per_run',500))))
+        with store._lock:
+            hint=store.db.execute(
+                """SELECT max_messages FROM v3_batch_hints
+                   WHERE platform=? AND owner=? AND room=?""",
+                v3_store.key(s)).fetchone()
+        if hint:max_messages=min(max_messages,max(1,int(hint['max_messages'])))
         max_chars=max(1000,min(120000,int(cfg.get('max_message_chars_per_run',45000))))
         cursor,batch,skipped,end=select_batch(
             store,s,cursor=cursor,end_limit=end_limit,
@@ -126,10 +132,10 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         cap=max(1000,int(cfg.get('max_input_tokens_per_run',16000)))
         # Prefer shrinking optional historical context before dropping live evidence.
         # Output coverage also needs room for every message_id in the provider response.
-        output_reserve=max(1500,int(cfg.get('estimated_output_tokens_per_run',1500)))
+        output_reserve=max(1500,int(cfg.get('estimated_output_tokens_per_run',4500)))
         while batch:
             estimate=estimate_tokens(v3_extract.SYSTEM+v3_extract.build_prompt(s,batch,events,claims))
-            coverage_estimate=600+sum(12+len(r['message_id']) for r in batch)
+            coverage_estimate=1200+len(batch)*4
             if estimate<=cap and coverage_estimate<=output_reserve:break
             if estimate>cap and len(claims)>10:claims.pop();continue
             if estimate>cap and len(events)>4:events.pop();continue
@@ -166,6 +172,12 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                 store,s,rid,cursor,end,batch,proposal,
                 dry_run=dry_run,replay_job_id=replay_job_id,skipped=skipped)
             failed=False
+            if not dry_run and hint:
+                with store.transaction():
+                    store.db.execute(
+                        """UPDATE v3_batch_hints SET max_messages=MIN(500,max_messages*2),
+                           updated_at=? WHERE platform=? AND owner=? AND room=?""",
+                        (now(),*v3_store.key(s)))
             store.finish_run(rid,'preview' if dry_run else 'committed',stats['claims'],
                              actual_in=inp if not estimated else None,
                              actual_out=out if not estimated else None,
@@ -176,6 +188,17 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                     'details':stats,'estimated_input':estimate,
                     'input_tokens':inp,'output_tokens':out,'usage_estimated':estimated}
         except Exception as exc:
+            # Model-side incomplete/invalid output shrinks the next batch; source cursor
+            # remains unchanged. Do not treat database/authorization errors as shrink cues.
+            if isinstance(exc,ValueError) and not dry_run:
+                with store.transaction():
+                    store.db.execute(
+                        """INSERT INTO v3_batch_hints(platform,owner,room,max_messages,updated_at)
+                           VALUES(?,?,?,?,?)
+                           ON CONFLICT(platform,owner,room) DO UPDATE SET
+                            max_messages=MIN(max_messages,excluded.max_messages),
+                            updated_at=excluded.updated_at""",
+                        (*v3_store.key(s),max(1,len(batch)//2),now()))
             store.finish_run(rid,'failed',error=type(exc).__name__)
             if not replay_job_id:
                 store.fail_scope(s,type(exc).__name__,
