@@ -61,6 +61,10 @@ DDL = (
       subject_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
       last_raw_id INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
       PRIMARY KEY(platform,owner,room,subject_id))""",
+    """CREATE TABLE IF NOT EXISTS v3_batch_hints (
+      platform TEXT NOT NULL,owner TEXT NOT NULL,room TEXT NOT NULL,
+      max_messages INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+      PRIMARY KEY(platform,owner,room))""",
     """CREATE TABLE IF NOT EXISTS memory_claim_versions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,claim_id TEXT NOT NULL,
       revision INTEGER NOT NULL,previous_content TEXT NOT NULL,
