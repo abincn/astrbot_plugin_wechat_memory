@@ -69,7 +69,7 @@ async def consolidate(scheduler,s,member=''):
             'attribution':r['attribution'],'confidence':r['confidence'],
             'revision':r['revision']} for r in relevant]
         # Ensure every available message id in prompt is counted toward coverage.
-        system=PROFILE_SYSTEM+'\n目标成员ID：'+member
+        system=PROFILE_SYSTEM+'\n目标成员ID：'+member+'\n本批必须回传的 batch_key：'+v3_extract.batch_coverage_key(rows)
         prompt=v3_extract.build_prompt(s,rows,[],existing)
         while rows and estimate_tokens(system+prompt)>cap:
             if len(rows)>2:
