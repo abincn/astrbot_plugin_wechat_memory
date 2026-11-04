@@ -67,18 +67,18 @@
   },
   "max_messages_per_run": {
     "type": "int",
-    "description": "一次 Dreaming 最多输入消息数（最多 500）",
-    "default": 250
+    "description": "一次 V3 读取原始消息安全上限（最多 500，按 Token 自动缩减）",
+    "default": 500
   },
   "analysis_batch_soft_limit": {
     "type": "int",
-    "description": "V2 每次模型分析的有效文本消息软上限（1–100，默认60）",
+    "description": "旧 V2 专用；V3 采用动态 Token 分批，不受 100 条硬限制",
     "default": 60
   },
   "max_message_chars_per_run": {
     "type": "int",
-    "description": "一次 Dreaming 新消息字符预算",
-    "default": 20000
+    "description": "一次 V3 读取原始消息总字符预算（仍受模型 Token 限额约束）",
+    "default": 45000
   },
   "max_existing_per_member": {
     "type": "int",
@@ -217,8 +217,8 @@
   },
   "estimated_output_tokens_per_run": {
     "type": "int",
-    "description": "每轮预算中为模型输出预留的估计 Token 数（非 Provider 硬上限）",
-    "default": 1500
+    "description": "每轮为覆盖汇报和事件/画像提案预留的估算输出 Token（V3 推荐4500，可按模型调整）",
+    "default": 4500
   },
   "max_cost_per_group_day_usd": {
     "type": "float",
@@ -234,5 +234,10 @@
     "type": "float",
     "description": "当前 Dreaming Provider 每百万输出 Token 美元单价，0 表示未配置",
     "default": 0
+  },
+  "dreaming_v3_enabled": {
+    "type": "bool",
+    "description": "启用全新的 V3 事件/主张/证据画像引擎（启用后替代旧 V2 提取；原始消息保留）",
+    "default": true
   }
 }

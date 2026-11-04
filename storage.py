@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .identity import Scope
 from .schema_v3 import migrate
+from .v3_schema import migrate as migrate_v3
 from .policy import fingerprint, safe_content, topic_key
 
 
@@ -171,6 +172,21 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 pass
             migrate(self.db)
+            current_version=int(self.db.execute('PRAGMA user_version').fetchone()[0])
+            if current_version < 5:
+                # Never overwrite an existing pre-V3 backup; sqlite backup is WAL-consistent.
+                backup_path=path.with_name(path.name+'.before-v3.sqlite3')
+                if not backup_path.exists():
+                    backup=sqlite3.connect(str(backup_path))
+                    try:
+                        self.db.backup(backup)
+                    finally:
+                        backup.close()
+            migrate_v3(self.db)
+            self.db.execute(
+                """UPDATE reanalysis_jobs SET status='paused',
+                   last_error='interrupted_restart',updated_at=?
+                   WHERE status IN ('running','pending')""",(now(),))
 
     @contextlib.contextmanager
     def transaction(self):
@@ -624,6 +640,14 @@ class MemoryStore:
                 (*self._key(s),user,int(disabled),now()))
             if disabled:
                 self.db.execute(
+                    """DELETE FROM memory_claims
+                       WHERE platform=? AND owner=? AND room=?
+                       AND subject_type='member' AND subject_id=?""",
+                    (*self._key(s),user))
+                self.db.execute(
+                    """DELETE FROM consolidation_queue WHERE platform=? AND owner=? AND room=?
+                       AND subject_id=?""",(*self._key(s),user))
+                self.db.execute(
                     """UPDATE observation_signals SET status='invalidated',content='',
                        updated_at=? WHERE platform=? AND owner=? AND room=?
                        AND scope='member' AND subject_id=?""",
@@ -691,12 +715,30 @@ class MemoryStore:
                      JOIN raw_messages m ON m.id=x.raw_id
                      WHERE m.platform=? AND m.owner=? AND m.room=? AND m.sender_id=?)""",
                 (now(),*self._key(s),user))
+            # V3: quarantine texts derived from a deleted author's evidence before cascade.
+            self.db.execute(
+                """UPDATE memory_claims SET content='来源已清除，待重新核实',
+                    status='review',revision=revision+1,updated_at=?
+                   WHERE id IN (
+                     SELECT DISTINCT x.claim_id FROM claim_evidence x
+                     JOIN raw_messages r ON r.id=x.raw_id
+                     WHERE r.platform=? AND r.owner=? AND r.room=? AND r.sender_id=?)""",
+                (now(),*self._key(s),user))
+            self.db.execute(
+                """UPDATE memory_events SET summary='',state='disputed',updated_at=?
+                   WHERE id IN (
+                     SELECT DISTINCT x.event_id FROM event_evidence x
+                     JOIN raw_messages r ON r.id=x.raw_id
+                     WHERE r.platform=? AND r.owner=? AND r.room=? AND r.sender_id=?)""",
+                (now(),*self._key(s),user))
             erased=self.db.execute('''DELETE FROM raw_messages WHERE platform=? AND owner=? AND room=? AND sender_id=?''',
                                    (*self._key(s),user)).rowcount
             self.db.execute('''DELETE FROM retrieval_audit WHERE platform=? AND owner=? AND room=? AND requester=?''',
                             (*self._key(s),user))
             self.db.execute('''DELETE FROM working_snapshots WHERE platform=? AND owner=? AND room=? AND subject_id=?''',
                             (*self._key(s),user))
+            from .v3_store import erase_member
+            erase_member(self,s,user)
             # Any generated group record that lost ALL its original evidence must be quarantined.
             self.db.execute('''UPDATE memories SET status='review',revision=revision+1,updated_at=?
                WHERE platform=? AND owner=? AND room=? AND scope='group' AND origin='dream'
