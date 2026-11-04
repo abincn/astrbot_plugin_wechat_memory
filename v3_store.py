@@ -243,10 +243,11 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                          run_id=excluded.run_id,updated_at=excluded.updated_at""",
                     (*key(s),m['id'],m['reason'],m['detail'],run_id,now()))
         if consolidation_member:
+            # An unresolved member attribution is not a completed profile consolidation.
             store.db.execute(
-                """UPDATE consolidation_queue SET status='completed',updated_at=?
+                """UPDATE consolidation_queue SET status=?,updated_at=?
                    WHERE platform=? AND owner=? AND room=? AND subject_id=?""",
-                (now(),*key(s),consolidation_member))
+                ('pending' if rejected else 'completed',now(),*key(s),consolidation_member))
         elif replay_job_id:
             cur=store.db.execute(
                 """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
