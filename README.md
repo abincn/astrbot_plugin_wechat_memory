@@ -1,12 +1,21 @@
-# AstrBot WeChat Memory — v0.3.0-alpha.2
+# AstrBot WeChat Memory — v0.3.0-alpha.3
 
 独立的 AstrBot 长期记忆插件。运行链：PC 微信 Hook → [astrbot_plugin_wechat_hook](https://github.com/abincn/astrbot_plugin_wechat_hook) → AstrBot → 本插件。**不需要 Hermes、OneBot 或微信 Agent 插件**；不接管真实微信消息发送。
 
-> **发布状态：源码实现 / 开发预览。** 已进行语法静态检查，**未在真实 AstrBot、PC 微信 Hook、Provider、Dashboard 环境中完成运行验收**。首次安装只在测试群使用，数据库备份和 API 费用须自行管理。当前实验版支持 v0.2.2 SQLite 数据库增量升级至 Schema v3；只做旧库原位扩展，不重建原始聊天表。升级前须完成一致性备份，并先在测试副本上验证。
+> **发布状态：源码实现 / 开发预览。** 已进行语法静态检查，**未在真实 AstrBot、PC 微信 Hook、Provider、Dashboard 环境中完成运行验收**。首次安装只在测试群使用，数据库备份和 API 费用须自行管理。当前实验版支持 v0.2.2 SQLite 数据库增量升级至 Schema v4；只做旧库原位扩展，不重建原始聊天表。升级前须完成一致性备份，并先在测试副本上验证。
 
-## v0.3.0-alpha.2 Dreaming V2 实验分支
+## v0.3.0-alpha.3 改进
 
-> **仅用于手动验收，不要直接升级唯一生产实例。** 功能默认关闭。升级数据库前必须使用 SQLite backup API 完成一致性备份。Schema 将由 V2 迁移到 v3；旧插件不可直接对 v3 数据库回滚运行，降级须连同升级前备份恢复。
+- 修复历史重分析期间 AstrBot 重启后任务永久停在 running 的问题：重启后转换为 paused，可在控制台继续。
+- 预览结果不只展示计数：每次成功的 V2 预览会保存有来源 ID 的话题、观察和正式记忆提案，在“Dreaming 运行记录”中打开对应的 preview 记录可直接查看。
+- “话题累计摘要”“成员与群观察”支持点开查看关联原始消息；成员退出画像或清除本人原文时，移除该群受影响的预览结果。
+- 观察上下文额外包含已关联的证据条数；新批次优先复用既有 topic/observation 的 ID，实现跨批次补证据，而不是重复新增。
+- Schema 正向增量升级到 **v4**（新增 `dream_run_previews` 表）；旧数据保留，**不能直接对已升级 DB 使用 alpha.2 回滚**，应从备份恢复。
+- 本分支仍为未实机验收的实验版；不要在唯一生产实例直接试用。
+
+## v0.3.0-alpha.3 Dreaming V2 实验分支
+
+> **仅用于手动验收，不要直接升级唯一生产实例。** 功能默认关闭。升级数据库前必须使用 SQLite backup API 完成一致性备份。Schema 将从 v2/v3 迁移到 v4；旧插件不可直接对 v3 数据库回滚运行，降级须连同升级前备份恢复。
 
 本分支新增：
 
