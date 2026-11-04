@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0-beta.2 (2026-11-04)
+
+- Fix V3 history preview failing with TypeError when no rows are excluded: the selected-prefix cursor used max(int) without an iterable.
+- Fix V3 history range preparation still requiring the obsolete V2 switch.
+- Rebuild the workbench with focused overview, profiles, events, claims and historical task pages; move legacy records and audit under advanced management.
+- Expose progress, per-task failure reasons, source evidence, and review operations without raw JSON as the primary interface.
+- Group 48 previously flat AstrBot configuration fields into nine essentials and six advanced sections; migrate persisted flat settings once without changing their values.
+- Retain media actions and extend current-group JSON exports to include V3 events, claims and analysis coverage.
+- Add sanitized error descriptions to run/history records and stack trace in administrator service logs.
+- No test code added; static front-end/config validation completed, live AstrBot/manual acceptance pending.
+
+
 ## 0.4.0-beta.1 (2026-11-04)
 
 - Rebuilt Dreaming core around V3 Event / Claim / Evidence / Profile, rather than V2 parallel observations and changes.
