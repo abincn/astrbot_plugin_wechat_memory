@@ -56,7 +56,8 @@ def _validated(scope,changes,messages,existing,max_changes:int):
             raise ValueError('Add/review cannot target existing memory')
         output.append({'index':i,'op':op,'scope':level,'subject':subject,'kind':kind,'key':key,
             'content':content,'refs':refs,'certainty':certainty,'evidence_type':evidence_type,
-            'reason':reason,'target':target,'revision':revision})
+            'reason':reason,'target':target,'revision':revision,
+            'observation_id':c.get('observation_id','')})
     return output
 
 
@@ -200,6 +201,11 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
     """All DB writes (including success cursor) are one atomic commit. No calls to LLM."""
     parsed=_validated(s,changes,messages,existing,max_changes)
     v2_parts = _validate_v2(s,v2,messages,existing_topics,existing_observations) if v2 is not None else None
+    valid_observations={r['id'] for r in existing_observations} if v2 is not None else set()
+    for c in parsed:
+        obs_id=c['observation_id']
+        if obs_id and (not isinstance(obs_id,str) or obs_id not in valid_observations):
+            raise ValueError('Unknown observation source for promotion')
     for c in parsed:
         if c['scope']=='member' and store.is_opted_out(s,c['subject']):
             raise PermissionError('Member has opted out of group profiling')
@@ -264,6 +270,20 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
                     store.db.execute('INSERT OR IGNORE INTO memory_sources(memory_id,raw_id) VALUES(?,?)',
                                      (applied_id,sources[m]['id']))
                 touched.add(c['subject'])
+                if c['observation_id'] and c['op']=='add' and c['certainty']=='explicit' and status in ('applied','noop'):
+                    obs_id=c['observation_id']
+                    promoted=store.db.execute(
+                        """UPDATE observation_signals SET status='promoted',
+                           promoted_memory_id=?,revision=revision+1,updated_at=?
+                           WHERE id=? AND platform=? AND owner=? AND room=?
+                           AND scope=? AND subject_id=? AND status='observing'""",
+                        (applied_id,now(),obs_id,*store._key(s),c['scope'],c['subject']))
+                    if promoted.rowcount!=1:
+                        raise RuntimeError('Observation changed before promotion')
+                    store.db.execute(
+                        """INSERT OR IGNORE INTO memory_sources(memory_id,raw_id)
+                           SELECT ?,raw_id FROM observation_sources WHERE observation_id=?
+                           AND relation='support'""",(applied_id,obs_id))
             store.db.execute('''INSERT INTO dream_candidates(id,run_id,op_index,action,memory_id,subject_id,scope,
                  old_content,new_content,reason,sources_json,expected_revision,status,applied_memory_id,created_at)
                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
