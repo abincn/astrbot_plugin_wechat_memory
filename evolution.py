@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 
@@ -77,6 +78,7 @@ def _validate_v2(s, payload, messages, existing_topics, existing_observations):
         return list(dict.fromkeys(value))
 
     topics = []
+    topic_refs = set(old_topics)
     for row in payload['topics']:
         ident = row.get('id') or ''
         if not isinstance(ident,str) or (ident and ident not in old_topics):
@@ -89,7 +91,13 @@ def _validate_v2(s, payload, messages, existing_topics, existing_observations):
         state = row.get('state')
         if state not in ('active','concluded','disputed','closed'):
             raise ValueError('Invalid V2 topic state')
-        topics.append((ident,expected,title,summary,state,refs(row)))
+        alias = row.get('ref','')
+        if not isinstance(alias,str) or len(alias)>32 or (alias and not re.fullmatch(r'[A-Za-z0-9_-]+',alias)):
+            raise ValueError('Invalid V2 topic reference')
+        if alias and alias in topic_refs:
+            raise ValueError('Duplicate V2 topic reference')
+        if alias: topic_refs.add(alias)
+        topics.append((ident,expected,title,summary,state,refs(row),alias))
     observations = []
     for row in payload['observations']:
         ident = row.get('id') or ''
@@ -119,19 +127,24 @@ def _validate_v2(s, payload, messages, existing_topics, existing_observations):
                       old_observations[ident]['subject_id'] != subject or
                       old_observations[ident]['signal_type'] != signal_type):
             raise ValueError('V2 observation identity mismatch')
+        topic_ref=row.get('topic_ref','')
+        if not isinstance(topic_ref,str) or (topic_ref and topic_ref not in topic_refs):
+            raise ValueError('Observation references unknown topic')
         observations.append((ident,expected,scope,subject,signal_type,
-                             safe_content(row.get('content'),500),evidence_type,evidence))
+                             safe_content(row.get('content'),500),evidence_type,evidence,topic_ref))
     return topics, observations
 
 
-def _write_v2(store,s,topics,observations,messages):
+def _write_v2(store,s,topics,observations,messages,existing_topics):
     """Called within apply() transaction, before advancing dream_cursor."""
     from .policy import fingerprint
     by_message = {m['message_id']:m for m in messages}
     key = store._key(s)
     topics_written = 0
     observations_written = 0
-    for ident,expected,title,summary,state,refs in topics:
+    topic_links={t['id']:t['id'] for t in existing_topics}
+    topic_sources={}
+    for ident,expected,title,summary,state,refs,alias in topics:
         timestamps = [by_message[mid]['message_at'] for mid in refs]
         if ident:
             cur=store.db.execute(
@@ -148,22 +161,37 @@ def _write_v2(store,s,topics,observations,messages):
                     first_message_at,last_message_at,created_at,updated_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (ident,*key,title,summary,state,min(timestamps),max(timestamps),now(),now()))
+        topic_links[ident]=ident
+        if alias:topic_links[alias]=ident
+        topic_sources[ident]=set(refs)
         for mid in refs:
             store.db.execute(
                 "INSERT OR IGNORE INTO topic_sources(topic_id,raw_id) VALUES(?,?)",
                 (ident,by_message[mid]['id']))
         topics_written += 1
-    for ident,expected,scope,subject,kind,content,evidence_type,refs in observations:
+    for ident,expected,scope,subject,kind,content,evidence_type,refs,topic_ref in observations:
         if scope == 'member' and store.is_opted_out(s,subject):
             raise PermissionError('Member has opted out of observation collection')
         timestamps = [by_message[mid]['message_at'] for mid in refs]
         signal_key = fingerprint(kind,content,subject)
+        linked_topic=topic_links.get(topic_ref) if topic_ref else None
+        if not linked_topic:
+            matched=[tid for tid,trefs in topic_sources.items() if trefs.intersection(refs)]
+            if len(matched)==1:linked_topic=matched[0]
+        if scope=='group' and kind=='topic_participation' and linked_topic and not ident:
+            # Topic discussions belong in topic_states, not a second group observation.
+            for mid in refs:
+                store.db.execute(
+                    "INSERT OR IGNORE INTO topic_sources(topic_id,raw_id) VALUES(?,?)",
+                    (linked_topic,by_message[mid]['id']))
+            continue
         if ident:
             cur=store.db.execute(
                 """UPDATE observation_signals SET last_seen_at=?,updated_at=?,
-                   revision=revision+1 WHERE id=? AND platform=? AND owner=? AND room=?
+                   topic_id=COALESCE(?,topic_id),revision=revision+1
+                   WHERE id=? AND platform=? AND owner=? AND room=?
                    AND revision=? AND status='observing'""",
-                (max(timestamps),now(),ident,*key,expected))
+                (max(timestamps),now(),linked_topic,ident,*key,expected))
             if cur.rowcount != 1:
                 raise RuntimeError('V2 observation changed during extraction')
         else:
@@ -175,17 +203,18 @@ def _write_v2(store,s,topics,observations,messages):
                 ident=row['id']
                 store.db.execute(
                     """UPDATE observation_signals SET last_seen_at=?,updated_at=?,
-                       revision=revision+1 WHERE id=? AND status='observing'""",
-                    (max(timestamps),now(),ident))
+                       topic_id=COALESCE(?,topic_id),revision=revision+1
+                       WHERE id=? AND status='observing'""",
+                    (max(timestamps),now(),linked_topic,ident))
             else:
                 ident=uuid.uuid4().hex
                 store.db.execute(
                     """INSERT INTO observation_signals
                        (id,platform,owner,room,scope,subject_id,signal_type,signal_key,
-                        content,status,evidence_type,first_seen_at,last_seen_at,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        content,status,evidence_type,topic_id,first_seen_at,last_seen_at,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (ident,*key,scope,subject,kind,signal_key,content,'observing',
-                     evidence_type,min(timestamps),max(timestamps),now(),now()))
+                     evidence_type,linked_topic,min(timestamps),max(timestamps),now(),now()))
         for mid in refs:
             store.db.execute(
                 """INSERT OR IGNORE INTO observation_sources
@@ -227,7 +256,7 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
             raise RuntimeError('Stale Dreaming cursor')
         t_written = o_written = 0
         if v2_parts is not None and not dry_run:
-            t_written,o_written=_write_v2(store,s,*v2_parts,messages)
+            t_written,o_written=_write_v2(store,s,*v2_parts,messages,existing_topics)
         for c in parsed:
             old=None
             if c['target']:
@@ -301,6 +330,18 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
             store.db.execute('''UPDATE room_state SET dream_cursor=?,last_success=?,next_attempt=0,last_error=''
                 WHERE platform=? AND owner=? AND room=? AND dream_cursor=?''',
                 (to_cursor,now(),*store._key(s),from_cursor))
+        if v2_parts is not None and dry_run:
+            # Preserve the exact source-backed candidate set for admin inspection.
+            # No topic, observation or active memory is modified by preview mode.
+            store.db.execute(
+                """INSERT INTO dream_run_previews(run_id,payload_json,created_at)
+                   VALUES(?,?,?)""",
+                (run_id,json.dumps({
+                    'topics':v2['topics'],
+                    'observations':v2['observations'],
+                    'changes':v2['changes'],
+                    'empty_reason':v2.get('empty_reason','')
+                },ensure_ascii=False),now()))
         if v2_parts is not None:
             store.db.execute(
                 """INSERT INTO dream_run_details(run_id,mode,analyzed_messages,topics_written,

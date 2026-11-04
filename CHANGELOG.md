@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0-alpha.3 (2026-11-04)
+
+- Make interrupted replay jobs resumable after AstrBot restart.
+- Persist source-backed V2 preview topics, observations and candidate memory proposals for dashboard review.
+- Display source messages for topics and observations; include evidence counts in extraction context.
+- SQLite Schema v4 adds a preview audit table while preserving existing raw messages and cursors.
+- Remove stored preview summaries when a participant opts out or requests source deletion.
+
+
 ## 0.3.0-alpha.2 (2026-11-04)
 
 - Experimental V2 topic and observation extraction behind an opt-in switch.
