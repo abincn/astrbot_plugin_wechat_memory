@@ -142,6 +142,7 @@ def parse(text, messages, events, claims):
         e['source_message_ids']=_ids(e.get('source_message_ids'),mids,nonempty=True)
     accepted=[]
     rejected=[]
+    corrected=[]
     for c in cs:
         if not isinstance(c,dict):raise ValueError('Invalid claim')
         ident=c.get('existing_id','')
@@ -168,28 +169,42 @@ def parse(text, messages, events, claims):
         if c['attribution']=='self_statement':
             own=[mid for mid in evidence if mids[mid]['sender_id']==sub]
             foreign=[mid for mid in evidence if mids[mid]['sender_id']!=sub]
-            if c['subject_type']!='member' or not own:
-                # Do not turn an unsupported self-report into a fact about another user.
-                # Quarantine only its sources; all other valid claims may still commit.
-                rejected.append({
-                    'reason':'self_statement_author_mismatch',
-                    'subject_id':sub,'claim_type':c['claim_type'],
-                    'content':c['content'],
-                    'source_message_ids':evidence,
-                })
-                continue
-            if foreign:
-                # Keep only true first-person evidence and downgrade the claim pending review.
-                # The unverified cross-author references remain visible in the deferred ledger.
-                rejected.append({
-                    'reason':'cross_author_evidence_removed',
-                    'subject_id':sub,'claim_type':c['claim_type'],
-                    'content':c['content'],
-                    'source_message_ids':foreign,
-                })
-                evidence=own
-                c['confidence']='uncertain'
-            c['speaker_id']=sub
+            if not own:
+                authors={mids[mid]['sender_id'] for mid in evidence}
+                if c['subject_type']=='member' and len(authors)==1 and sub not in authors:
+                    # One proven other speaker: retain only as an attributed, unconfirmed
+                    # statement, never as the subject's own first-person claim.
+                    speaker=next(iter(authors))
+                    c['attribution']='third_party_statement'
+                    c['speaker_id']=speaker
+                    c['confidence']='reported'
+                    corrected.append({
+                        'reason':'self_statement_reclassified_as_third_party',
+                        'subject_id':sub,'speaker_id':speaker,
+                        'claim_type':c['claim_type'],'content':c['content'],
+                        'source_message_ids':evidence,
+                    })
+                else:
+                    rejected.append({
+                        'reason':'self_statement_author_mismatch',
+                        'subject_id':sub,'claim_type':c['claim_type'],
+                        'content':c['content'],
+                        'source_message_ids':evidence,
+                    })
+                    continue
+            else:
+                if foreign:
+                    # Cross-member evidence cannot support a direct self-report; retain
+                    # only the subject's own sources, and mark the conclusion uncertain.
+                    rejected.append({
+                        'reason':'cross_author_evidence_removed',
+                        'subject_id':sub,'claim_type':c['claim_type'],
+                        'content':c['content'],
+                        'source_message_ids':foreign,
+                    })
+                    evidence=own
+                    c['confidence']='uncertain'
+                c['speaker_id']=sub
         elif speaker and not any(mids[mid]['sender_id']==speaker for mid in evidence):
             rejected.append({
                 'reason':'speaker_not_in_evidence',
@@ -231,6 +246,7 @@ def parse(text, messages, events, claims):
     if len(es)==18 or len(cs)==40:raise ValueError('V3 proposal at limit; shrink batch to prevent dropped claims')
     obj['claims']=accepted
     obj['rejected_claims']=rejected
+    obj['corrected_claims']=corrected
     return obj
 
 async def analyze(context, provider_id, scope, messages, events, claims, timeout=90):
