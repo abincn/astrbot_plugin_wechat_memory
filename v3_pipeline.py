@@ -203,8 +203,11 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
             if not replay_job_id:
                 store.fail_scope(s,type(exc).__name__,
                                  max(120,int(cfg.get('retry_delay_seconds',600))))
-            logger.warning('[wechat_memory] V3 failed room=%s type=%s',s.room,type(exc).__name__)
-            return {'status':'failed','run_id':rid,'reason':type(exc).__name__}
+            logger.exception('[wechat_memory] V3 run failed room=%s',s.room)
+            explanation=type(exc).__name__
+            if isinstance(exc,(TypeError,ValueError)):
+                explanation+=': '+str(exc)[:140]
+            return {'status':'failed','run_id':rid,'reason':explanation}
         finally:
             store.budget_finish(s,estimate,inp,out,purpose='dream',
                                 estimated_usage=estimated,error=failed,day=day)
