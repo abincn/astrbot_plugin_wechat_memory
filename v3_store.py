@@ -46,6 +46,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
     """One atomic event/claim/evidence/ledger/cursor commit. Caller owns model budget."""
     raw={m['message_id']:m for m in messages}
     rejected=list(proposal.get('rejected_claims',[]))
+    corrected=list(proposal.get('corrected_claims',[]))
     changed_events=changed_claims=added_sources=0
     with store.transaction():
         if consolidation_member:
@@ -271,6 +272,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
             'no_signal':len(messages)-len(sourced|rejected_sources),
             'deferred':len(rejected_sources),
             'rejected_claims':len(rejected),
+            'corrected_claims':len(corrected),
         }
         store.db.execute(
             """INSERT INTO v3_run_details
@@ -279,8 +281,9 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
             (run_id,summary['analyzed'],summary['no_signal'],changed_events,changed_claims,
              added_sources,'replay_preview' if dry_run and replay_job_id else
              'preview' if dry_run else 'profile_consolidation' if consolidation_member else 'replay_apply' if replay_job_id else 'live',
-             json.dumps(proposal if dry_run else {'rejected_claims':rejected},
-                        ensure_ascii=False)[:100000] if dry_run or rejected else ''))
+             json.dumps(proposal if dry_run else {'rejected_claims':rejected,
+                                                    'corrected_claims':corrected},
+                        ensure_ascii=False)[:100000] if dry_run or rejected or corrected else ''))
         store.db.execute(
             """UPDATE dream_runs SET status=?,changes_count=?,finished_at=? WHERE id=?""",
             ('preview' if dry_run else 'committed',changed_claims,now(),run_id))
