@@ -46,7 +46,13 @@ n.onclick=()=>busy(async()=>{state.selected=key(r);renderList();await detail();}
 function button(label,fn,cls=''){const b=el('button',label,cls);b.type='button';b.onclick=()=>busy(fn);return b;}
 async function detail(){const box=$('detail');box.replaceChildren();const row=state.rows.find(r=>key(r)===state.selected);
 if(!row){box.append(el('p','选择记录查看详情。','muted'));return;}
-if(state.view==='v3_profiles'||state.view==='v3_claims'){
+if(state.view==='v3_events'){
+box.append(el('h3',row.title),el('p',row.summary,'content'),
+el('p',`状态：${row.state}\n类型：${row.event_type}\n时间锚：${row.anchor_date||'未确定'}\nID：${row.id}`,'info'));
+const ev=await api('v3_event_sources',{id:row.id});
+box.append(el('h3','事件原始证据'));
+for(const e of ev.items||[])box.append(el('p',`${e.sender_id} · ${date(e.message_at)}\n${e.message_id}\n${e.text}`,'source'));
+} else if(state.view==='v3_profiles'||state.view==='v3_claims'){
 box.append(el('h3',`${row.claim_type} · ${row.status}`),
 el('p',row.content,'content'),
 el('p',`成员：${row.subject_id||'群'}\n证据来源：${row.attribution}\n可信度：${row.confidence}\n敏感级别：${row.sensitivity}\n关联事件：${row.event_id||'无'}\nID：${row.id}`,'info'));
