@@ -52,6 +52,14 @@ el('p',row.content,'content'),
 el('p',`成员：${row.subject_id||'群'}\n证据来源：${row.attribution}\n可信度：${row.confidence}\n敏感级别：${row.sensitivity}\n关联事件：${row.event_id||'无'}\nID：${row.id}`,'info'));
 const src=await api('v3_sources',{id:row.id});box.append(el('h3','原始证据'));
 for(const e of src.items||[])box.append(el('p',`${e.sender_id} · ${date(e.message_at)} · ${e.relation}\n${e.message_id}\n${e.text}`,'source'));
+const actions=el('div',undefined,'actions');
+if(row.status==='candidate'||row.status==='review')actions.append(button('确认画像',async()=>{await api('v3_claim_approve',{id:row.id,revision:row.revision});await refresh();},'primary'));
+if(row.status!=='retracted')actions.append(button('修改主张',async()=>showEditor('v3_edit',row)),
+button('撤销主张',async()=>{if(await askConfirm('撤销该主张，保留可审计版本记录？')){await api('v3_claim_retract',{id:row.id,revision:row.revision});await refresh();}},'danger'));
+box.append(actions);
+const versions=await api('v3_claim_versions',{id:row.id});
+if((versions.items||[]).length)box.append(el('h3','历史版本'));
+for(const x of versions.items||[])box.append(el('p',`r${x.revision} ${x.reason} · ${date(x.occurred_at)}\n${x.previous_content}`,'source'));
 } else if(state.view==='memories'){
 box.append(el('h3',`记忆 ${row.kind} · r${row.revision}`),el('p',row.content,'content'),el('p',`ID: ${row.id}\n作用域: ${row.scope} / ${row.subject_id||'群'}\n状态: ${row.status}\n更新时间: ${date(row.updated_at)}`,'info'));
 const actions=el('div',undefined,'actions');if(row.status==='review')actions.append(button('批准普通待审核记录',async()=>{await api('approve',{id:row.id,revision:row.revision});await refresh();},'primary'));
@@ -73,8 +81,8 @@ if(row.status==='paused'||row.status==='failed')actions.append(button('恢复任
 if(!['completed','cancelled'].includes(row.status))actions.append(button('取消任务',async()=>{if(await askConfirm('取消剩余历史重分析任务？已完成的正式批次不会撤销。')){await api('replay_cancel',{job_id:row.id});await list();notify('已取消剩余历史重分析。');}},'danger'));
 box.append(actions);
 }}}
-function showEditor(mode,row=null){$('editor-title').textContent=mode==='edit'?'修改自然语言记忆':'添加本群记忆';$('content').value=row?.content||'';$('new-fields').hidden=mode==='edit';$('editor').dataset.mode=mode;$('editor').showModal();}
-$('editor-form').onsubmit=(event)=>{event.preventDefault();busy(async()=>{if($('editor').dataset.mode==='edit'){const row=state.rows.find(r=>r.id===state.selected);await api('edit',{id:row.id,revision:row.revision,content:$('content').value.trim()});}
+function showEditor(mode,row=null){$('editor-title').textContent=mode==='edit'||mode==='v3_edit'?'修改记忆内容':'添加本群记忆';$('content').value=row?.content||'';$('new-fields').hidden=mode==='edit'||mode==='v3_edit';$('editor').dataset.mode=mode;$('editor').showModal();}
+$('editor-form').onsubmit=(event)=>{event.preventDefault();busy(async()=>{if($('editor').dataset.mode==='edit'||$('editor').dataset.mode==='v3_edit'){const row=state.rows.find(r=>r.id===state.selected);await api($('editor').dataset.mode==='v3_edit'?'v3_claim_edit':'edit',{id:row.id,revision:row.revision,content:$('content').value.trim()});}
 else await api('add',{content:$('content').value.trim(),kind:$('kind').value,subject:$('subject').value.trim(),topic:$('topic').value.trim()});$('editor').close();await refresh();});};
 $('cancel').onclick=()=>$('editor').close();
 $('view').onchange=()=>busy(async()=>{state.view=$('view').value;await list();});
