@@ -172,7 +172,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                 store,s,rid,cursor,end,batch,proposal,
                 dry_run=dry_run,replay_job_id=replay_job_id,skipped=skipped)
             failed=False
-            if not dry_run and hint:
+            if hint:
                 with store.transaction():
                     store.db.execute(
                         """UPDATE v3_batch_hints SET max_messages=MIN(500,max_messages*2),
@@ -190,7 +190,9 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         except Exception as exc:
             # Model-side incomplete/invalid output shrinks the next batch; source cursor
             # remains unchanged. Do not treat database/authorization errors as shrink cues.
-            if isinstance(exc,ValueError) and not dry_run:
+            retryable=isinstance(exc,v3_extract.CoverageError) and len(batch)>1
+            if retryable:
+                # Both preview and apply must retry smaller, without advancing either cursor.
                 with store.transaction():
                     store.db.execute(
                         """INSERT INTO v3_batch_hints(platform,owner,room,max_messages,updated_at)
@@ -207,7 +209,8 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                 store.fail_scope(s,explanation,
                                  max(120,int(cfg.get('retry_delay_seconds',600))))
             logger.exception('[wechat_memory] V3 run failed room=%s',s.room)
-            return {'status':'failed','run_id':rid,'reason':explanation}
+            return {'status':'retryable' if retryable else 'failed',
+                    'run_id':rid,'reason':explanation}
         finally:
             store.budget_finish(s,estimate,inp,out,purpose='dream',
                                 estimated_usage=estimated,error=failed,day=day)

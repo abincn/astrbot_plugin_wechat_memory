@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0-beta.3 (2026-11-04)
+
+- Replace unreliable model-side reviewed_count arithmetic with a server-bound batch coverage key.
+- Retain strict complete/deferred/source-message validation and avoid cursor advance on partial coverage.
+- Add bounded retry with smaller batches for both preview and apply, with pause after repeated incomplete outputs.
+- Align member-profile consolidation with the new protocol; previously failed replay jobs remain resumable.
+- No test code added, real AstrBot / Provider acceptance pending.
+
 ## 0.4.0-beta.2 (2026-11-04)
 
 - Fix V3 history preview failing with TypeError when no rows are excluded: the selected-prefix cursor used max(int) without an iterable.
