@@ -623,6 +623,11 @@ class MemoryStore:
                 DO UPDATE SET disabled=excluded.disabled,changed_at=excluded.changed_at''',
                 (*self._key(s),user,int(disabled),now()))
             if disabled:
+                self.db.execute(
+                    """UPDATE observation_signals SET status='invalidated',content='',
+                       updated_at=? WHERE platform=? AND owner=? AND room=?
+                       AND scope='member' AND subject_id=?""",
+                    (now(),*self._key(s),user))
                 rows=self.db.execute('''SELECT * FROM memories WHERE platform=? AND owner=? AND room=?
                     AND scope='member' AND subject_id=? AND status!='deleted' ''',(*self._key(s),user)).fetchall()
                 for m in rows:
@@ -664,6 +669,27 @@ class MemoryStore:
                 if linked.intersection(erased_ids):
                     self.db.execute('''UPDATE dream_candidates SET old_content='',new_content='',reason='',
                         sources_json='[]',status='redacted',error='source_erasure' WHERE id=?''',(candidate['id'],))
+            # Redact derivative texts containing the user's source evidence before
+            # cascading deletion of the raw source links.
+            self.db.execute(
+                """UPDATE observation_signals SET status='invalidated',content='',
+                   updated_at=? WHERE id IN (
+                     SELECT DISTINCT x.observation_id FROM observation_sources x
+                     JOIN raw_messages m ON m.id=x.raw_id
+                     WHERE m.platform=? AND m.owner=? AND m.room=? AND m.sender_id=?)""",
+                (now(),*self._key(s),user))
+            self.db.execute(
+                """UPDATE observation_signals SET status='invalidated',content='',
+                   updated_at=? WHERE platform=? AND owner=? AND room=?
+                   AND scope='member' AND subject_id=?""",
+                (now(),*self._key(s),user))
+            self.db.execute(
+                """UPDATE topic_states SET summary='',state='closed',updated_at=?
+                   WHERE id IN (
+                     SELECT DISTINCT x.topic_id FROM topic_sources x
+                     JOIN raw_messages m ON m.id=x.raw_id
+                     WHERE m.platform=? AND m.owner=? AND m.room=? AND m.sender_id=?)""",
+                (now(),*self._key(s),user))
             erased=self.db.execute('''DELETE FROM raw_messages WHERE platform=? AND owner=? AND room=? AND sender_id=?''',
                                    (*self._key(s),user)).rowcount
             self.db.execute('''DELETE FROM retrieval_audit WHERE platform=? AND owner=? AND room=? AND requester=?''',
