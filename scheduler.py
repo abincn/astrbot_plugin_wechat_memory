@@ -179,7 +179,8 @@ class MemoryScheduler:
                 return report
             except Exception as exc:
                 self.store.finish_run(rid,'failed',error=type(exc).__name__)
-                self.store.fail_scope(s,type(exc).__name__,max(120,int(cfg.get('retry_delay_seconds',600))))
+                if not replay_job_id:
+                    self.store.fail_scope(s,type(exc).__name__,max(120,int(cfg.get('retry_delay_seconds',600))))
                 logger.warning('[wechat_memory] Dreaming failed room=%s type=%s',s.room,type(exc).__name__)
                 return {'status':'failed','run_id':rid,'reason':type(exc).__name__}
             finally:
