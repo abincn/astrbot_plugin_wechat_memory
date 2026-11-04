@@ -95,7 +95,7 @@ SYSTEM_V2 = """你负责维护一个微信群的长期记忆，只分析本次�
 已有记忆未提及即保持不变；新增使用 B 不表示不再使用 A。
 不要凭空补全事实、用户 ID、消息 ID、引用、已存在的记忆或观察 ID。
 单轮输出必须是一个 JSON 对象，无 Markdown：
-{"schema_version":2,"topics":[],"observations":[],"changes":[],"coverage":"complete","empty_reason":""}
+{"schema_version":2,"topics":[],"observations":[],"changes":[],"coverage":"complete","empty_reason":"no_signal"}
 topics 每项：id（更新时引用输入中的既有 ID，否则空字符串）、revision（更新时用既有版本，否则 0）、title、summary、state=active|concluded|disputed|closed、source_message_ids。
 observations 每项：id（已有观察 ID，否则空字符串）、revision（已有版本或 0）、scope=group|member、subject_id（群则空）、signal_type=explicit_fact|explicit_preference|long_term_plan|group_decision|ongoing_task|topic_participation、content（中文短句）、evidence_type=self_report|group_decision|other、source_message_ids。
 changes 继续遵守 v1 的正式记忆变更协议，op=add|revise|supersede|review，scope=group|member，
