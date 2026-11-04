@@ -40,7 +40,8 @@ class MemoryPanel:
         self.replay_tasks[job_id]=task
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
-        task.add_done_callback(lambda _:self.replay_tasks.pop(job_id,None))
+        task.add_done_callback(lambda finished:self.replay_tasks.pop(job_id,None)
+                               if self.replay_tasks.get(job_id) is finished else None)
         return {'scheduled':True,'job_id':job_id}
 
     async def _replay_worker(self,s,job_id):
