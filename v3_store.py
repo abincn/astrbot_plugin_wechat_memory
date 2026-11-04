@@ -47,6 +47,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
     raw={m['message_id']:m for m in messages}
     rejected=list(proposal.get('rejected_claims',[]))
     corrected=list(proposal.get('corrected_claims',[]))
+    committed_claim_keys=set()
     changed_events=changed_claims=added_sources=0
     with store.transaction():
         if consolidation_member:
@@ -210,6 +211,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                             status='pending',last_raw_id=MAX(last_raw_id,excluded.last_raw_id),
                             updated_at=excluded.updated_at""",
                         (*key(s),subject,max(m['id'] for m in evidence),now()))
+                committed_claim_keys.add((subject,item['claim_type'],item['content']))
                 changed_claims+=1
 
             # Rejected attribution is not silently counted as 'no memory signal'.
@@ -263,6 +265,10 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                    WHERE platform=? AND owner=? AND room=? AND dream_cursor=?""",
                 (end,now(),*key(s),cursor))
             if cur.rowcount!=1:raise RuntimeError('Production cursor changed during V3 commit')
+        if not dry_run:
+            corrected=[item for item in corrected
+                       if (item['subject_id'],item['claim_type'],item['content'])
+                       in committed_claim_keys]
         sourced={mid for e in proposal['events'] for mid in e['source_message_ids']}
         sourced.update(mid for c in proposal['claims'] for mid in c['source_message_ids'])
         rejected_sources={mid for claim in rejected for mid in claim['source_message_ids']}
