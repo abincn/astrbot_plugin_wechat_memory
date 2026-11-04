@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 
@@ -19,12 +20,15 @@ SYSTEM = """你是长期存在的微信群的证据整理器，不是个人简�
 新 events 用临时 ref（如 e1），新 claims 以 event_ref 引用本批新 ref 或已有 event id。
 只输出结构化 JSON；任何 source_message_ids 仅能来自本批 messages。
 可合理输出 0 条 claim，但不能假装没读到某条 message。
-coverage.reviewed_count 必须是逐条检查的消息数量（必须覆盖输入消息总数）；
-如有不能确定/无法完整读取的消息，将其真实 message_id 加入 deferred_message_ids，
-并使 complete=false。不要虚构完整性；返回不完整会由程序自动缩小批次。
+不要手动统计消息数量：服务端已经计算输入的批次身份 batch_coverage_key。
+coverage.batch_key 必须逐字复制输入中的 batch_coverage_key，不能复用示例、上批 ID 或自行计算数量。
+逐条检查 messages 中的内容；有未阅读完、无法判断覆盖情况或剩余事实超出输出容量时，
+把对应 message_id 放到 deferred_message_ids 并设置 complete=false；程序将缩小批次。
+仅在完整分析本批所有 messages 后才能设置 complete=true、deferred_message_ids=[]。
+服务端会验证 batch_key 和所有证据消息 ID；不得虚构来源。
 最多 events 18 条、claims 40 条；如果达到容量而尚有有用事实，报告 complete=false。
 Schema：
-{"schema_version":3,"coverage":{"reviewed_count":0,"deferred_message_ids":[],"complete":true},
+{"schema_version":3,"coverage":{"batch_key":"从输入 batch_coverage_key 原样复制","deferred_message_ids":[],"complete":true},
  "events":[{"ref":"e1","existing_id":"","revision":0,"title":"活动标题","event_type":"gathering|project|discussion|other",
  "anchor_date":"","state":"planning|active|completed|cancelled|disputed","summary":"精简摘要",
  "source_message_ids":[]}],
@@ -49,9 +53,21 @@ ATTRIBUTION={'self_statement','third_party_statement','observed_behavior','group
 CONFIDENCE={'confirmed','supported','reported','uncertain','contradicted'}
 SENSITIVITY={'normal','personal','restricted'}
 
+class CoverageError(ValueError):
+    """Model-declared incomplete batch or invalid coverage contract; eligible to retry smaller."""
+
+
+def batch_coverage_key(messages):
+    """Server-generated batch identity; the model only echoes it, never counts input rows."""
+    ordered='\x1f'.join(m['message_id'] for m in messages)
+    return hashlib.sha256(ordered.encode('utf-8')).hexdigest()[:16]
+
+
 def build_prompt(scope, messages, events, claims):
     obj={
         'scope':'this authorized wechat group only',
+        'batch_coverage_key':batch_coverage_key(messages),
+        'input_message_count':len(messages),
         'events':[{k:r[k] for k in ('id','title','anchor_date','state','summary','revision')} for r in events],
         'claims':[{k:r[k] for k in ('id','event_id','subject_type','subject_id','claim_type',
                 'predicate','content','attribution','confidence','revision')} for r in claims],
@@ -76,20 +92,23 @@ def parse(text, messages, events, claims):
     if not isinstance(obj,dict) or obj.get('schema_version')!=3:
         raise ValueError('Unexpected V3 protocol')
     mids={m['message_id']:m for m in messages}
+    if len(mids)!=len(messages):
+        raise ValueError('Duplicate message IDs in batch')
     coverage=obj.get('coverage')
     if not isinstance(coverage,dict) or type(coverage.get('complete')) is not bool:
-        raise ValueError('Invalid V3 coverage')
-    deferred=_ids(coverage.get('deferred_message_ids'),mids)
-    if 'reviewed_message_ids' in coverage:
-        reviewed=_ids(coverage['reviewed_message_ids'],mids)
-        if set(reviewed)&set(deferred) or set(reviewed)|set(deferred)!=set(mids):
-            raise ValueError('V3 coverage IDs do not match input messages')
-    else:
-        reviewed_count=coverage.get('reviewed_count')
-        if type(reviewed_count) is not int or reviewed_count!=len(mids)-len(deferred):
-            raise ValueError('V3 reviewed count does not cover input messages')
+        raise CoverageError('Missing V3 complete flag')
+    if coverage.get('batch_key') != batch_coverage_key(messages):
+        raise CoverageError('Model did not echo this batch coverage key')
+    try:
+        deferred=_ids(coverage.get('deferred_message_ids'),mids)
+        if 'reviewed_message_ids' in coverage:
+            reviewed=_ids(coverage['reviewed_message_ids'],mids)
+            if set(reviewed)&set(deferred) or set(reviewed)|set(deferred)!=set(mids):
+                raise CoverageError('V3 reviewed message IDs do not cover the batch')
+    except ValueError as exc:
+        raise CoverageError('Invalid V3 coverage message IDs') from exc
     if not coverage['complete'] or deferred:
-        raise ValueError('Incomplete V3 coverage; batch must be retried with fewer messages')
+        raise CoverageError('Incomplete V3 coverage; batch must be retried with fewer messages')
     es=obj.get('events');cs=obj.get('claims')
     if not isinstance(es,list) or not isinstance(cs,list) or len(es)>18 or len(cs)>40:
         raise ValueError('V3 proposal limit exceeded')
