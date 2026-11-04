@@ -184,6 +184,12 @@ class MemoryPanel:
             return self.store.replay_prepare(s,int(payload.get('from_id',1)),
                                                  int(payload.get('to_id',0)))
         if op=='replay_jobs':return {'items':self.store.replay_jobs(s)}
+        if op=='topic_sources':
+            return {'items':self.store.v2_source_rows(s,'topic',str(payload.get('id','')))}
+        if op=='observation_sources':
+            return {'items':self.store.v2_source_rows(s,'observation',str(payload.get('id','')))}
+        if op=='run_preview':
+            return {'preview':self.store.v2_run_preview(s,str(payload.get('id','')))}
         if op=='topics':return {'items':self.store.list_topics(s)}
         if op=='observations':return {'items':self.store.list_observations(s)}
         if op=='runs':
