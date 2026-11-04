@@ -9,6 +9,13 @@
 <button id="backfill">从 Hook Inbox 补录</button><button id="media">处理媒体</button>
 <button id="export">导出记忆</button><button id="pause">暂停巩固</button>
 </section>
+<section class="toolbar" aria-label="Dreaming V2 历史重分析">
+<label>历史起始原文 ID<input id="replay-from" type="number" min="1" value="1" step="1"></label>
+<label>历史结束原文 ID（0 为当前末尾）<input id="replay-to" type="number" min="0" value="0" step="1"></label>
+<label>执行模式<select id="replay-mode"><option value="preview">仅预览（不写记忆）</option>
+<option value="apply">正式写入观察及记忆</option></select></label>
+<button id="replay-start">开始历史重分析</button><button id="replay-refresh">查看历史任务</button>
+</section>
 <div id="status" role="status" aria-live="polite">连接中…</div>
 <section class="metrics" aria-label="运行状态">
 <div><span>原始消息</span><strong id="raw">—</strong></div>
@@ -19,7 +26,7 @@
 </section>
 <section class="toolbar view-toolbar"><label>查看内容<select id="view">
 <option value="memories">长期记忆</option><option value="candidates">巩固候选/差异审核</option>
-<option value="runs">Dreaming 运行记录</option><option value="topics">话题累计摘要</option><option value="observations">成员与群观察</option><option value="history">原始历史</option>
+<option value="runs">Dreaming 运行记录</option><option value="topics">话题累计摘要</option><option value="observations">成员与群观察</option><option value="replay_jobs">历史重分析任务</option><option value="history">原始历史</option>
 <option value="retrieval_audit">检索审计</option></select></label>
 <small id="meta" class="muted"></small></section>
 <main>
@@ -38,5 +45,5 @@
 <h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p>
 <div class="dialog-actions"><button type="submit" value="cancel">取消</button><button type="submit" value="ok" class="danger">确认</button></div>
 </form></dialog>
-<script type="module" src="./app.js?v=0.3.0-alpha.1"></script>
+<script type="module" src="./app.js?v=0.3.0-alpha.2"></script>
 </body></html>
