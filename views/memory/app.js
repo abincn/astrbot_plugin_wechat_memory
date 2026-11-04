@@ -30,7 +30,7 @@ if(state.view==='candidates')return `${row.action}: ${row.new_content}`;
 if(state.view==='runs')return `${row.status} · ${row.changes_count} 处修改 · ${row.provider}`;
 if(state.view==='history')return row.text||`[${row.kind}] ${row.media_kind||''}`;
 if(state.view==='topics')return `${row.title} · ${row.state} · ${row.summary}`;
-if(state.view==='observations')return `${row.scope==='member'?row.subject_id:'群公共'} · ${row.signal_type} · ${row.content}`;
+if(state.view==='observations')return `${row.topic_title?'话题 '+row.topic_title+' · ':''}${row.scope==='member'?row.subject_id:'群公共'} · ${row.signal_type} · ${row.content}`;
 if(state.view==='replay_jobs')return `${row.mode} · ${row.status} · ${row.messages_scanned} 条已分析 · ID ${row.next_raw_id}/${row.end_raw_id}`;
 return `${row.mode} · ${row.selected_ids} · ${row.raw_ids}`;}
 function key(row){return state.view==='memories'?row.id:state.view==='candidates'?row.id:state.view==='runs'?row.id:state.view==='history'?row.id:row.id;}
