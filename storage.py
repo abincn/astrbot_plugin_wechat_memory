@@ -755,3 +755,98 @@ class MemoryStore:
                    WHERE r.id=? AND r.platform=? AND r.owner=? AND r.room=?""",
                 (run_id, *self._key(s))).fetchone()
             return dict(r) if r else None
+
+
+    def replay_prepare(self, s: Scope, start: int, end: int) -> dict:
+        with self._lock:
+            bounds=self.db.execute(
+                """SELECT COUNT(*) n,COALESCE(MAX(id),0) max_id FROM raw_messages
+                   WHERE platform=? AND owner=? AND room=?""",self._key(s)).fetchone()
+            maximum=int(bounds['max_id'])
+            if maximum==0:
+                raise ValueError('该群没有原始消息')
+            start=int(start);end=int(end) if end else maximum
+            if start<1 or end<start or end>maximum:
+                raise ValueError('历史重分析 ID 范围不合法')
+            total=self.db.execute(
+                """SELECT COUNT(*) FROM raw_messages WHERE platform=? AND owner=? AND room=?
+                   AND id BETWEEN ? AND ?""",(*self._key(s),start,end)).fetchone()[0]
+            if total==0:
+                raise ValueError('指定范围没有该群的原始消息')
+            return {'from_id':start,'to_id':end,'rows':total,'source_max_id':maximum}
+
+    def replay_create(self,s:Scope,actor:str,start:int,end:int,mode:str)->dict:
+        if mode not in ('preview','apply'):
+            raise ValueError('Invalid replay mode')
+        scope=self.replay_prepare(s,start,end)
+        rid=uuid.uuid4().hex
+        with self.transaction():
+            busy=self.db.execute(
+                """SELECT id FROM reanalysis_jobs WHERE platform=? AND owner=? AND room=?
+                   AND status IN ('pending','running') LIMIT 1""",self._key(s)).fetchone()
+            if busy:raise ValueError('当前群已有运行中的历史重分析任务')
+            self.db.execute(
+                """INSERT INTO reanalysis_jobs(id,platform,owner,room,start_raw_id,end_raw_id,
+                   next_raw_id,status,mode,actor,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (rid,*self._key(s),scope['from_id'],scope['to_id'],scope['from_id'],
+                 'pending',mode,str(actor)[:100],now(),now()))
+        return {'id':rid,**scope,'status':'pending','mode':mode}
+
+    def replay_job(self,s:Scope,rid:str)->dict|None:
+        with self._lock:
+            r=self.db.execute(
+                """SELECT * FROM reanalysis_jobs WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (rid,*self._key(s))).fetchone()
+            return dict(r) if r else None
+
+    def replay_jobs(self,s:Scope,limit:int=30)->list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.db.execute(
+                """SELECT * FROM reanalysis_jobs WHERE platform=? AND owner=? AND room=?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (*self._key(s),min(50,max(1,limit))))]
+
+    def replay_status(self,s:Scope,rid:str,status:str,error:str=''):
+        if status not in ('pending','running','paused','completed','failed','cancelled'):
+            raise ValueError('Invalid replay status')
+        with self.transaction():
+            row=self.db.execute(
+                """SELECT status FROM reanalysis_jobs WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (rid,*self._key(s))).fetchone()
+            if not row:raise ValueError('History job not found')
+            if row['status'] in ('completed','cancelled'):
+                raise ValueError('History job has already stopped')
+            self.db.execute(
+                """UPDATE reanalysis_jobs SET status=?,last_error=?,updated_at=?
+                   WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (status,error[:160],now(),rid,*self._key(s)))
+
+    def replay_batch(self,s:Scope,start:int,end_limit:int,max_messages:int,max_chars:int):
+        with self._lock:
+            rows=[dict(r) for r in self.db.execute(
+                """SELECT id,message_id,sender_id,text,kind,message_at,reply_to_id,urgent,source
+                   FROM raw_messages WHERE platform=? AND owner=? AND room=?
+                   AND id>=? AND id<=? ORDER BY id LIMIT ?""",
+                (*self._key(s),start,end_limit,min(max(1,max_messages),500)))]
+            if not rows:
+                return start-1,[],end_limit
+            selected=[];length=0;last=start-1
+            for row in rows:
+                if row['kind'] not in ('text','media_text') or not row['text']:
+                    last=row['id'];continue
+                if len(row['text'])>max_chars:
+                    if selected:break
+                    last=row['id'];continue
+                if length+len(row['text'])>max_chars:break
+                selected.append(row);length+=len(row['text']);last=row['id']
+            return start-1,selected,last
+
+    def replay_advance_empty(self,s:Scope,job_id:str,start_cursor:int,end:int):
+        with self.transaction():
+            cur=self.db.execute(
+                """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
+                   updated_at=? WHERE id=? AND platform=? AND owner=? AND room=?
+                   AND status='running' AND next_raw_id=?""",
+                (end+1,now(),job_id,*self._key(s),start_cursor+1))
+            if cur.rowcount!=1:raise RuntimeError('History job advanced concurrently')
