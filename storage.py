@@ -765,7 +765,8 @@ class MemoryStore:
         with self._lock:
             return [dict(r) for r in self.db.execute(
                 """SELECT o.*,(SELECT COUNT(*) FROM observation_sources x
-                   WHERE x.observation_id=o.id) source_count
+                   WHERE x.observation_id=o.id) source_count,
+                   (SELECT title FROM topic_states t WHERE t.id=o.topic_id) AS topic_title
                    FROM observation_signals o WHERE platform=? AND owner=? AND room=?
                    ORDER BY updated_at DESC LIMIT ?""",
                 (*self._key(s), min(200, max(1, limit))))]
