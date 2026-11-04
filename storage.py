@@ -628,11 +628,11 @@ class MemoryStore:
                 DO UPDATE SET disabled=excluded.disabled,changed_at=excluded.changed_at''',
                 (*self._key(s),user,int(disabled),now()))
             if disabled:
-            # Preview summaries may contain user-derived information.
-            self.db.execute(
-                """DELETE FROM dream_run_previews WHERE run_id IN (
-                   SELECT id FROM dream_runs WHERE platform=? AND owner=? AND room=?)""",
-                self._key(s))
+                # Preview summaries may contain user-derived information.
+                self.db.execute(
+                    """DELETE FROM dream_run_previews WHERE run_id IN (
+                       SELECT id FROM dream_runs WHERE platform=? AND owner=? AND room=?)""",
+                    self._key(s))
                 self.db.execute(
                     """UPDATE observation_signals SET status='invalidated',content='',
                        updated_at=? WHERE platform=? AND owner=? AND room=?
