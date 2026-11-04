@@ -217,8 +217,8 @@
   },
   "estimated_output_tokens_per_run": {
     "type": "int",
-    "description": "每轮预算中为模型输出预留的估计 Token 数（非 Provider 硬上限）",
-    "default": 1500
+    "description": "每轮为覆盖汇报和事件/画像提案预留的估算输出 Token（V3 推荐4500，可按模型调整）",
+    "default": 4500
   },
   "max_cost_per_group_day_usd": {
     "type": "float",
