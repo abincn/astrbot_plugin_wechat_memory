@@ -53,6 +53,9 @@ class MemoryPanel:
                     return
                 result=await self.scheduler.run_scope(
                     s,force=True,dry_run=job['mode']=='preview',replay_job_id=job_id)
+                current=self.store.replay_job(s,job_id)
+                if not current or current['status']!='running':
+                    return
                 if result['status'] in ('committed','preview','empty'):
                     continue
                 status='paused' if result['status'] in ('busy','budget_exceeded','oversize','insufficient') else 'failed'
