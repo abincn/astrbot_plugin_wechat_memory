@@ -301,12 +301,35 @@ def resolve_candidate(store,s,candidate_id,action,actor):
                     (c['memory_id'],*store._key(s))).fetchone()
                 if not prev or prev['revision']!=c['expected_revision'] or prev['status']!='active':
                     raise ValueError('Target changed; reject and rerun instead')
-                store._version(prev,'review_superseded',actor,c['run_id'])
-                store.db.execute("UPDATE memories SET status='superseded',revision=revision+1,updated_at=? WHERE id=?",
-                                 (now(),prev['id']))
-            store._version(memory,'review_approved',actor,c['run_id'])
-            store.db.execute("UPDATE memories SET status='active',revision=revision+1,updated_at=? WHERE id=?",
-                             (now(),memory['id']))
+                if c['action']=='revise':
+                    # A revision updates the existing fact; it does not supersede it.
+                    store._version(prev,'review_revise',actor,c['run_id'])
+                    store.db.execute(
+                        """UPDATE memories SET content=?,revision=revision+1,updated_at=?
+                           WHERE id=?""",(memory['content'],now(),prev['id']))
+                    store.db.execute(
+                        """INSERT OR IGNORE INTO memory_sources(memory_id,raw_id)
+                           SELECT ?,raw_id FROM memory_sources WHERE memory_id=?""",
+                        (prev['id'],memory['id']))
+                    store.db.execute('DELETE FROM embedding_vectors WHERE memory_id=?',(prev['id'],))
+                    store._version(memory,'review_applied_to_existing',actor,c['run_id'])
+                    store.db.execute(
+                        "UPDATE memories SET status='deleted',revision=revision+1,updated_at=? WHERE id=?",
+                        (now(),memory['id']))
+                    store.db.execute(
+                        'UPDATE dream_candidates SET applied_memory_id=? WHERE id=?',
+                        (prev['id'],candidate_id))
+                elif c['action']=='supersede':
+                    store._version(prev,'review_superseded',actor,c['run_id'])
+                    store.db.execute(
+                        "UPDATE memories SET status='superseded',revision=revision+1,updated_at=? WHERE id=?",
+                        (now(),prev['id']))
+                else:
+                    raise ValueError('Unsupported targeted review action')
+            if not (c['memory_id'] and c['action']=='revise'):
+                store._version(memory,'review_approved',actor,c['run_id'])
+                store.db.execute("UPDATE memories SET status='active',revision=revision+1,updated_at=? WHERE id=?",
+                                 (now(),memory['id']))
         else:
             store._version(memory,'review_rejected',actor,c['run_id'])
             store.db.execute("UPDATE memories SET status='deleted',revision=revision+1,updated_at=? WHERE id=?",
