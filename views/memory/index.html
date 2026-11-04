@@ -1,51 +1,152 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>微信记忆 Dreaming 工作台</title><link rel="stylesheet" href="./style.css"></head>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>微信群记忆 · Dreaming</title>
+  <link rel="stylesheet" href="./style.css?v=0.4.0-beta.2">
+</head>
 <body>
-<header><div><h1>微信群长期记忆 · Dreaming</h1><p>基于原文证据持续修订画像；按群独立、按需召回、费用受限。</p></div><span class="tag">AstrBot · SQLite</span></header>
-<section class="toolbar" aria-label="当前群与操作">
-<label>微信账号 / 群<select id="scope"></select></label>
-<button id="refresh">刷新</button><button id="v3-consolidate">画像巩固</button><button id="dream">运行巩固</button><button id="dry-run">预览巩固</button>
-<button id="backfill">从 Hook Inbox 补录</button><button id="media">处理媒体</button>
-<button id="export">导出记忆</button><button id="pause">暂停巩固</button>
-</section>
-<section class="toolbar" aria-label="Dreaming V3 历史重分析">
-<label>历史起始原文 ID<input id="replay-from" type="number" min="1" value="1" step="1"></label>
-<label>历史结束原文 ID（0 为当前末尾）<input id="replay-to" type="number" min="0" value="0" step="1"></label>
-<label>执行模式<select id="replay-mode"><option value="preview">仅预览（不写记忆）</option>
-<option value="apply">正式写入观察及记忆</option></select></label>
-<button id="replay-start">开始历史重分析</button><button id="replay-refresh">查看历史任务</button>
-</section>
-<div id="status" role="status" aria-live="polite">连接中…</div>
-<section class="metrics" aria-label="运行状态">
-<div><span>原始消息</span><strong id="raw">—</strong></div>
-<div><span>有效记忆</span><strong id="active">—</strong></div>
-<div><span>待审候选</span><strong id="review">—</strong></div>
-<div><span>未巩固消息</span><strong id="pending">—</strong></div>
-<div><span>今日 Token 记录/估计</span><strong id="tokens">—</strong></div>
-</section>
-<section class="toolbar view-toolbar"><label>查看内容<select id="view">
-<option value="v3_profiles">V3 成员画像</option><option value="v3_events">V3 群事件</option>
- <option value="v3_claims">V3 原子主张</option><option value="v3_coverage">V3 消息覆盖</option>
- <option value="memories">旧版/人工长期记忆</option><option value="candidates">巩固候选/差异审核</option>
-<option value="runs">Dreaming 运行记录</option><option value="topics">话题累计摘要</option><option value="observations">成员与群观察</option><option value="replay_jobs">历史重分析任务</option><option value="history">原始历史</option>
-<option value="retrieval_audit">检索审计</option></select></label>
-<small id="meta" class="muted"></small></section>
-<main>
-<section class="board"><div class="section-heading"><h2 id="list-title">长期记忆</h2><button class="primary" id="add">人工新增</button></div>
-<div class="filters" id="memory-filters"><input id="query" type="search" placeholder="筛选本群记忆">
-<select id="filter-status"><option value="">全部状态</option><option value="active">有效</option><option value="review">待审核</option><option value="superseded">已替代</option><option value="deleted">已删除</option></select>
-<select id="filter-kind"><option value="">全部分类</option><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">成员画像</option></select></div>
-<div id="items" class="items"><p class="empty">暂无记录</p></div></section>
-<aside class="detail"><h2>详情、证据与管理</h2><div id="detail"><p class="muted">选中记录查看来源或版本。</p></div></aside>
-</main>
-<footer>模型生成的是候选，不是事实证明。审核操作要求 Dashboard 管理员登录；群内画像绝不自动升级为跨群画像。媒体与历史补录均需要手动启用。</footer>
-<dialog id="editor"><form id="editor-form"><h2 id="editor-title">记忆内容</h2><label>自然语言事实<textarea id="content" required maxlength="1000" rows="5"></textarea></label>
-<div id="new-fields"><label>分类<select id="kind"><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">成员画像</option></select></label><label>主题标识（可选）<input id="topic" maxlength="90"></label><label>成员微信 ID（画像必填）<input id="subject" maxlength="256"></label></div>
-<div class="dialog-actions"><button id="cancel" type="button">取消</button><button class="primary" type="submit">保存</button></div></form></dialog>
-<dialog id="confirm-dialog" aria-labelledby="confirm-title"><form method="dialog">
-<h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p>
-<div class="dialog-actions"><button type="submit" value="cancel">取消</button><button type="submit" value="ok" class="danger">确认</button></div>
-</form></dialog>
-<script type="module" src="./app.js?v=0.4.0-beta.1"></script>
-</body></html>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <div class="eyebrow">WECHAT MEMORY <span class="dot">/</span> DREAMING V3</div>
+        <h1>群聊长期记忆</h1>
+        <p>成员画像、群内事件与原始证据，持续积累、可追溯。</p>
+      </div>
+      <div class="scope-tools">
+        <label for="scope">当前微信账号 / 群</label>
+        <div class="scope-control">
+          <select id="scope" aria-label="选择微信群"></select>
+          <button id="refresh" class="icon-button" title="刷新当前数据" aria-label="刷新">↻</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="status" role="status" aria-live="polite" class="notice" hidden></div>
+
+    <section class="metrics" aria-label="群记忆概览">
+      <div class="metric"><span>原始消息</span><strong id="raw">—</strong><small>当前群归档</small></div>
+      <div class="metric"><span>成员画像</span><strong id="profiles-count">—</strong><small>有已确认画像的成员</small></div>
+      <div class="metric"><span>群事件</span><strong id="events-count">—</strong><small>活动与话题</small></div>
+      <div class="metric"><span>原子主张</span><strong id="claims-count">—</strong><small>事实、行为、任务</small></div>
+      <div class="metric"><span>待巩固</span><strong id="pending-count">—</strong><small>需要综合的成员</small></div>
+    </section>
+
+    <div class="layout">
+      <aside class="sidebar" aria-label="工作台导航">
+        <div class="nav-label">工作台</div>
+        <nav class="main-nav" aria-label="主要功能">
+          <button class="nav-item active" data-view="overview" type="button"><span class="nav-icon">▦</span>概览</button>
+          <button class="nav-item" data-view="v3_profiles" type="button"><span class="nav-icon">♙</span>成员画像</button>
+          <button class="nav-item" data-view="v3_events" type="button"><span class="nav-icon">◇</span>群事件</button>
+          <button class="nav-item" data-view="v3_claims" type="button"><span class="nav-icon">≡</span>事实与观察</button>
+          <button class="nav-item" data-view="replay_jobs" type="button"><span class="nav-icon">◷</span>历史分析 <span id="job-count" class="nav-count" hidden></span></button>
+        </nav>
+        <details class="advanced-nav" id="advanced-menu">
+          <summary>高级管理 <span>⌄</span></summary>
+          <nav aria-label="高级功能">
+            <button class="nav-item" data-view="runs" type="button">执行记录</button>
+            <button class="nav-item" data-view="v3_coverage" type="button">消息覆盖</button>
+            <button class="nav-item" data-view="history" type="button">原始群聊</button>
+            <button class="nav-item" data-view="memories" type="button">旧版与人工记忆</button>
+            <button class="nav-item" data-view="candidates" type="button">旧版审核</button>
+            <button class="nav-item" data-view="topics" type="button">旧版话题</button>
+            <button class="nav-item" data-view="observations" type="button">旧版观察</button>
+            <button class="nav-item" data-view="retrieval_audit" type="button">检索审计</button>
+          </nav>
+        </details>
+        <div class="sidebar-footer">
+          <span class="version">V3 · 0.4.0-beta.2</span>
+          <span>每群独立 · 来源可追溯</span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section id="overview-page" class="page" aria-label="群记忆概览">
+          <div class="page-heading"><div><h2>工作概览</h2><p>快速查看当前群的记忆状态和后台任务。</p></div><button id="refresh-overview" class="quiet">刷新概览</button></div>
+          <div class="overview-grid">
+            <section class="surface quick-actions">
+              <h3>常用操作</h3>
+              <p class="muted">自动分析与历史重建互不覆盖游标。</p>
+              <div class="action-grid">
+                <button id="action-run" class="action primary"><strong>分析新消息</strong><span>从未处理的消息继续</span></button>
+                <button id="action-profile" class="action"><strong>巩固成员画像</strong><span>整理已积累的成员信息</span></button>
+                <button id="action-history" class="action"><strong>重新分析历史</strong><span>对已归档群聊补提记忆</span></button>
+                <button id="action-preview" class="action"><strong>预览下一批</strong><span>不写入正式记忆</span></button>
+              </div>
+            </section>
+            <section class="surface status-overview">
+              <h3>运行与额度</h3>
+              <dl class="status-list">
+                <div><dt>运行状态</dt><dd id="running-status">—</dd></div>
+                <div><dt>生产游标</dt><dd id="cursor">—</dd></div>
+                <div><dt>今日调用次数</dt><dd id="calls">—</dd></div>
+                <div><dt>今日 Token</dt><dd id="tokens">—</dd></div>
+                <div><dt>最近成功</dt><dd id="last-success">—</dd></div>
+              </dl>
+              <p id="last-error" class="inline-warning" hidden></p>
+              <div class="inline-actions"><button id="action-pause" class="quiet">暂停自动分析</button><button id="action-backfill" class="quiet">补录 Hook 历史</button></div>
+            </section>
+          </div>
+          <section class="surface recent">
+            <div class="section-heading"><h3>最近执行</h3><button id="more-runs" class="text-button">全部记录</button></div>
+            <div id="recent-runs" class="compact-list"><p class="empty">暂无执行记录。</p></div>
+          </section>
+        </section>
+
+        <section id="history-page" class="page" aria-label="历史分析任务" hidden>
+          <div class="page-heading"><div><h2>历史分析</h2><p>重新提取已经归档的群聊，不修改正常分析游标。</p></div><button id="history-refresh" class="quiet">刷新任务</button></div>
+          <form id="history-form" class="surface history-form">
+            <div class="form-header"><h3>新建重分析任务</h3><span>先预览，再正式写入</span></div>
+            <div class="form-grid">
+              <label>开始消息 ID<input id="replay-from" type="number" min="1" step="1" value="1" required></label>
+              <label>结束消息 ID<input id="replay-to" type="number" min="0" step="1" value="0" required><small>0 表示当前最后一条</small></label>
+              <label>执行模式<select id="replay-mode"><option value="preview">预览，不写入</option><option value="apply">正式写入</option></select></label>
+              <button type="submit" class="primary">创建任务</button>
+            </div>
+          </form>
+          <div class="split">
+            <section class="surface list-surface"><div class="section-heading"><h3>历史任务</h3><span id="tasks-total" class="meta">—</span></div><div id="jobs-list" class="records"></div></section>
+            <aside class="surface detail-surface"><div class="section-heading"><h3>任务详情</h3></div><div id="job-detail" class="detail-body"><p class="empty">选择任务查看进度与错误原因。</p></div></aside>
+          </div>
+        </section>
+
+        <section id="data-page" class="page" aria-label="记忆与证据" hidden>
+          <div class="page-heading">
+            <div><h2 id="list-title">成员画像</h2><p id="list-subtitle">选择一条记录，查看来源和详细状态。</p></div>
+            <div class="inline-actions"><button id="list-refresh" class="quiet">刷新列表</button><button id="add" class="primary" hidden>新增人工记忆</button></div>
+          </div>
+          <div class="split">
+            <section class="surface list-surface">
+              <div class="filters">
+                <input id="query" type="search" placeholder="搜索当前列表内容" aria-label="筛选记录">
+                <select id="filter-status" aria-label="状态筛选"><option value="">全部状态</option><option value="active">有效</option><option value="candidate">候选</option><option value="review">待审核</option><option value="retracted">已撤销</option><option value="superseded">已替代</option><option value="deleted">已删除</option></select>
+                <select id="filter-kind" aria-label="分类筛选"><option value="">全部分类</option></select>
+              </div>
+              <div class="records-count"><span id="record-total">—</span><span class="muted">点击项目查看来源</span></div>
+              <div id="items" class="records"><p class="empty">暂无记录。</p></div>
+            </section>
+            <aside class="surface detail-surface">
+              <div class="section-heading"><h3>详细信息与证据</h3></div>
+              <div id="detail" class="detail-body"><p class="empty">选择左侧记录查看详细信息。</p></div>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+    <footer>记忆内容带有来源与可信度，内部使用不等于可以对所有群成员直接公开。历史重分析和画像巩固均可能产生模型费用。</footer>
+  </div>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><form method="dialog">
+    <h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p>
+    <div class="dialog-actions"><button type="submit" value="cancel">取消</button><button type="submit" value="ok" class="primary">确认</button></div>
+  </form></dialog>
+  <dialog id="editor" aria-labelledby="editor-title"><form id="editor-form">
+    <h2 id="editor-title">编辑记忆</h2><label>内容<textarea id="content" required maxlength="1000" rows="6"></textarea></label>
+    <div id="new-fields" hidden><label>分类<select id="kind"><option value="fact">事实</option><option value="decision">决策</option><option value="context">背景</option><option value="preference">偏好</option><option value="profile">成员画像</option></select></label><label>成员微信 ID（成员画像时填写）<input id="subject" maxlength="256"></label><label>主题（可选）<input id="topic" maxlength="90"></label></div>
+    <div class="dialog-actions"><button id="cancel" type="button">取消</button><button type="submit" class="primary">保存修改</button></div>
+  </form></dialog>
+  <script type="module" src="./app.js?v=0.4.0-beta.2"></script>
+</body>
+</html>
