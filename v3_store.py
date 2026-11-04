@@ -42,13 +42,16 @@ def _in_scope(db,s,table,ident):
         (ident,*key(s))).fetchone()
 
 
-def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_job_id='',skipped=()):
+def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_job_id='',skipped=(),consolidation_member=''):
     """One atomic event/claim/evidence/ledger/cursor commit. Caller owns model budget."""
     raw={m['message_id']:m for m in messages}
     ids=[m['id'] for m in messages]
     changed_events=changed_claims=added_sources=0
     with store.transaction():
-        if replay_job_id:
+        if consolidation_member:
+            if store.is_opted_out(s,consolidation_member):
+                raise PermissionError('Member opted out of profiling')
+        elif replay_job_id:
             job=store.db.execute(
                 """SELECT status,next_raw_id FROM reanalysis_jobs
                    WHERE id=? AND platform=? AND owner=? AND room=?""",
@@ -188,7 +191,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
 
             sourced={mid for e in proposal['events'] for mid in e['source_message_ids']}
             sourced.update(mid for c in proposal['claims'] for mid in c['source_message_ids'])
-            for m in messages:
+            for m in ([] if consolidation_member else messages):
                 result='analyzed_with_evidence' if m['message_id'] in sourced else 'analyzed_no_signal'
                 store.db.execute(
                     """INSERT INTO analysis_ledger
@@ -209,7 +212,12 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                          result=excluded.result,reason=excluded.reason,
                          run_id=excluded.run_id,updated_at=excluded.updated_at""",
                     (*key(s),m['id'],m['reason'],m['detail'],run_id,now()))
-        if replay_job_id:
+        if consolidation_member:
+            store.db.execute(
+                """UPDATE consolidation_queue SET status='completed',updated_at=?
+                   WHERE platform=? AND owner=? AND room=? AND subject_id=?""",
+                (now(),*key(s),consolidation_member))
+        elif replay_job_id:
             cur=store.db.execute(
                 """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
                    messages_scanned=messages_scanned+?,updated_at=?
@@ -235,7 +243,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                VALUES(?,?,?,?,?,?,?,?)""",
             (run_id,summary['analyzed'],summary['no_signal'],changed_events,changed_claims,
              added_sources,'replay_preview' if dry_run and replay_job_id else
-             'preview' if dry_run else 'replay_apply' if replay_job_id else 'live',
+             'preview' if dry_run else 'profile_consolidation' if consolidation_member else 'replay_apply' if replay_job_id else 'live',
              json.dumps(proposal,ensure_ascii=False)[:100000] if dry_run else ''))
         store.db.execute(
             """UPDATE dream_runs SET status=?,changes_count=?,finished_at=? WHERE id=?""",
