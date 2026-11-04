@@ -9,6 +9,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 
+from .config_layout import normalize
 from .identity import Scope, get_scope, plain_text, private_owner, trusted_sender, valid_room
 from .panel import MemoryPanel
 from .retrieval import recall
@@ -19,6 +20,7 @@ from .storage import MemoryStore
 class Main(Star):
     def __init__(self,context:Context,config:AstrBotConfig):
         super().__init__(context)
+        config=normalize(config)
         self.cfg=config
         self.allowed_rooms={r for r in config.get('allowed_rooms',[]) if valid_room(r)}
         self.platform_id=str(config.get('platform_id','wechat_pc_hook'))
