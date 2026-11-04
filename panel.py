@@ -119,7 +119,7 @@ class MemoryPanel:
                 return json_response(result,headers={'Cache-Control':'no-store'})
             if op in ('replay_start','replay_resume','replay_pause','replay_cancel'):
                 if not (self.config.get('dreaming_v3_enabled',True) or self.config.get('dreaming_v2_enabled')) or not self.config.get('reanalysis_enabled'):
-                    raise ValueError('请先启用 dreaming_v2_enabled 和 reanalysis_enabled')
+                    raise ValueError('请先启用历史重分析功能')
                 s=self._scope(payload)
                 if op=='replay_start':
                     if payload.get('confirmed') is not True:
@@ -205,8 +205,8 @@ class MemoryPanel:
             if op=='v3_event_sources':return {'items':v3_store.event_sources(self.store,s,str(payload.get('id',''))[:64])}
             return {'items':v3_store.sources(self.store,s,str(payload.get('id',''))[:64])}
         if op=='replay_prepare':
-            if not self.config.get('dreaming_v2_enabled') or not self.config.get('reanalysis_enabled'):
-                raise ValueError('历史重分析未启用')
+            if not self.config.get('reanalysis_enabled'):
+                raise ValueError('请在插件配置中启用历史重分析')
             return self.store.replay_prepare(s,int(payload.get('from_id',1)),
                                                  int(payload.get('to_id',0)))
         if op=='replay_jobs':return {'items':self.store.replay_jobs(s)}
