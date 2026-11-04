@@ -42,7 +42,7 @@ def _in_scope(db,s,table,ident):
         (ident,*key(s))).fetchone()
 
 
-def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_job_id=''):
+def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_job_id='',skipped=()):
     """One atomic event/claim/evidence/ledger/cursor commit. Caller owns model budget."""
     raw={m['message_id']:m for m in messages}
     ids=[m['id'] for m in messages]
@@ -199,6 +199,16 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                          run_id=excluded.run_id,updated_at=excluded.updated_at""",
                     (*key(s),m['id'],result,run_id,now()))
 
+        if not dry_run:
+            for m in skipped:
+                store.db.execute(
+                    """INSERT INTO analysis_ledger
+                       (platform,owner,room,raw_id,pipeline_version,result,reason,run_id,updated_at)
+                       VALUES(?,?,?,?,3,?,?,?,?)
+                       ON CONFLICT(platform,owner,room,raw_id,pipeline_version) DO UPDATE SET
+                         result=excluded.result,reason=excluded.reason,
+                         run_id=excluded.run_id,updated_at=excluded.updated_at""",
+                    (*key(s),m['id'],m['reason'],m['detail'],run_id,now()))
         if replay_job_id:
             cur=store.db.execute(
                 """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
