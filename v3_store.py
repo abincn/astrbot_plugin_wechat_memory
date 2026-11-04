@@ -75,6 +75,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                 if ident:
                     row=_in_scope(store.db,s,'memory_events',ident)
                     if not row:raise ValueError('Unknown event in committed scope')
+                    if row['revision']!=item.get('revision'):raise RuntimeError('Stale V3 event revision')
                 elif item.get('anchor_date'):
                     # Exact event title AND explicit date, never merging unrelated gatherings.
                     row=store.db.execute(
@@ -127,6 +128,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                 if ident:
                     row=_in_scope(store.db,s,'memory_claims',ident)
                     if not row:raise ValueError('Cross-group claim')
+                    if row['revision']!=item.get('revision'):raise RuntimeError('Stale V3 claim revision')
                     if row['subject_type']!=item['subject_type'] or row['subject_id']!=subject or row['claim_type']!=item['claim_type']:
                         raise ValueError('Claim identity changed')
                 else:
