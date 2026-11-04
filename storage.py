@@ -684,7 +684,8 @@ class MemoryStore:
                    AND scope='member' AND subject_id=?""",
                 (now(),*self._key(s),user))
             self.db.execute(
-                """UPDATE topic_states SET summary='',state='closed',updated_at=?
+                """UPDATE topic_states SET title='历史话题（证据已清除）',
+                   summary='',state='closed',updated_at=?
                    WHERE id IN (
                      SELECT DISTINCT x.topic_id FROM topic_sources x
                      JOIN raw_messages m ON m.id=x.raw_id
