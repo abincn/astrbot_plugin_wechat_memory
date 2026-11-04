@@ -116,7 +116,14 @@ class MemoryPanel:
         if op=='sources':
             return {'sources':self.store.sources(s,str(payload.get('id',''))[:64])}
         if op=='history':return {'items':self.store.history(s)}
-        if op=='runs':return {'items':self.store.list_runs(s)}
+        if op=='topics':return {'items':self.store.list_topics(s)}
+        if op=='observations':return {'items':self.store.list_observations(s)}
+        if op=='runs':
+            rows=self.store.list_runs(s)
+            for row in rows:
+                detail=self.store.v2_run_detail(s,row['id'])
+                if detail:row['v2_detail']=detail
+            return {'items':rows}
         if op=='candidates':return {'items':self.store.candidates(s,status=str(payload.get('status',''))[:20])}
         if op=='retrieval_audit':return {'items':self.store.retrieval_audit(s)}
         if op=='versions':
