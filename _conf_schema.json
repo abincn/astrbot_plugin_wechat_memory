@@ -1,17 +1,23 @@
 {
   "enabled": {
     "type": "bool",
-    "description": "启用插件（默认关闭）",
+    "description": "启用微信群记忆",
     "default": false
-  },
-  "platform_id": {
-    "type": "string",
-    "description": "AstrBot 微信 Hook 平台实例 ID",
-    "default": "wechat_pc_hook"
   },
   "allowed_rooms": {
     "type": "list",
-    "description": "白名单群 ID，每项格式 x@chatroom",
+    "description": "允许归档和分析的微信群 ID",
+    "default": []
+  },
+  "extraction_provider_id": {
+    "type": "string",
+    "_special": "select_provider",
+    "description": "Dreaming 分析模型",
+    "default": ""
+  },
+  "admin_users": {
+    "type": "list",
+    "description": "可管理记忆工作台的 AstrBot 用户名",
     "default": []
   },
   "collection_enabled": {
@@ -26,218 +32,264 @@
   },
   "dreaming_enabled": {
     "type": "bool",
-    "description": "启用后台定时记忆综合（默认关闭）",
-    "default": false
-  },
-  "dreaming_v2_enabled": {
-    "type": "bool",
-    "description": "启用 V2 话题与观察积累策略（实验版，默认关闭；需要数据库 V3）",
-    "default": false
-  },
-  "extraction_provider_id": {
-    "type": "string",
-    "_special": "select_provider",
-    "description": "用于 Dreaming 的 AstrBot LLM Provider ID",
-    "default": ""
-  },
-  "dream_timezone": {
-    "type": "string",
-    "description": "每日 Dreaming 计划时区（IANA）",
-    "default": "Asia/Shanghai"
-  },
-  "dream_hour": {
-    "type": "int",
-    "description": "每日首次运行的当地小时（0-23）",
-    "default": 3
-  },
-  "scan_seconds": {
-    "type": "int",
-    "description": "检查间隔秒数",
-    "default": 300
-  },
-  "min_messages_to_dream": {
-    "type": "int",
-    "description": "低于此条数时跳过每日自动模型调用（显式记忆请求除外）",
-    "default": 10
-  },
-  "max_parallel_groups": {
-    "type": "int",
-    "description": "并行处理群数量（最多 4）",
-    "default": 2
-  },
-  "max_messages_per_run": {
-    "type": "int",
-    "description": "一次 V3 读取原始消息安全上限（最多 500，按 Token 自动缩减）",
-    "default": 500
-  },
-  "analysis_batch_soft_limit": {
-    "type": "int",
-    "description": "旧 V2 专用；V3 采用动态 Token 分批，不受 100 条硬限制",
-    "default": 60
-  },
-  "max_message_chars_per_run": {
-    "type": "int",
-    "description": "一次 V3 读取原始消息总字符预算（仍受模型 Token 限额约束）",
-    "default": 45000
-  },
-  "max_existing_per_member": {
-    "type": "int",
-    "description": "单成员携带已有记忆条数",
-    "default": 12
-  },
-  "max_input_tokens_per_run": {
-    "type": "int",
-    "description": "单次输入 Token 保守估算上限",
-    "default": 16000
-  },
-  "max_calls_per_group_day": {
-    "type": "int",
-    "description": "每天每群 Dreaming 最大调用次数",
-    "default": 2
-  },
-  "max_tokens_per_group_day": {
-    "type": "int",
-    "description": "每天每群 Dreaming 估算输入+输出 Token 额度",
-    "default": 40000
-  },
-  "max_changes_per_run": {
-    "type": "int",
-    "description": "单次最多生成多少个持久化变更（最多 8）",
-    "default": 8
-  },
-  "retry_delay_seconds": {
-    "type": "int",
-    "description": "Dreaming 失败重试至少间隔多少秒",
-    "default": 600
-  },
-  "recall_normal_chars": {
-    "type": "int",
-    "description": "普通问答可注入的记忆最大字符数",
-    "default": 2600
-  },
-  "recall_history_chars": {
-    "type": "int",
-    "description": "历史问答可注入上下文最大字符数",
-    "default": 6500
-  },
-  "recall_deep_chars": {
-    "type": "int",
-    "description": "用户要求深度分析时可注入的最大字符数",
-    "default": 24000
-  },
-  "recall_max_memories": {
-    "type": "int",
-    "description": "普通上下文记忆最多条数",
-    "default": 12
-  },
-  "enable_private_profile_commands": {
-    "type": "bool",
-    "description": "允许用户私聊自主管理全局个人画像和群内退出",
-    "default": true
-  },
-  "admin_users": {
-    "type": "list",
-    "description": "允许管理工作台的 AstrBot Dashboard 用户名，空名单禁止管理",
-    "default": []
-  },
-  "backfill_enabled": {
-    "type": "bool",
-    "description": "允许管理员从既有 Hook Inbox 只读补录历史",
+    "description": "开启每日自动分析与画像巩固",
     "default": false
   },
   "reanalysis_enabled": {
     "type": "bool",
-    "description": "允许管理员按群启动历史重新分析（需要先启用 Dreaming V2；默认关闭）",
+    "description": "允许管理页面重新分析历史",
     "default": false
   },
-  "hook_inbox_db": {
-    "type": "string",
-    "description": "通常留空，自动从运行中的 Hook 连接器读取真实 Inbox 路径；仅特殊部署需要手动填写（容器内路径）",
-    "default": ""
-  },
-  "embedding_enabled": {
+  "backfill_enabled": {
     "type": "bool",
-    "description": "可选：为长期记忆建立向量（默认关闭；产生额外费用）",
+    "description": "允许从 Hook Inbox 补录原始历史",
     "default": false
   },
-  "embedding_api_url": {
-    "type": "string",
-    "description": "OpenAI 兼容 Embeddings API 基础 URL（要求 HTTPS 或本机）",
-    "default": ""
+  "analysis_settings": {
+    "type": "object",
+    "description": "高级 · 分析与预算",
+    "hint": "仅在需要调整时展开；原有配置会在插件加载时无损迁移。",
+    "items": {
+      "dream_timezone": {
+        "type": "string",
+        "description": "每日 Dreaming 计划时区（IANA）",
+        "default": "Asia/Shanghai"
+      },
+      "dream_hour": {
+        "type": "int",
+        "description": "每日首次运行的当地小时（0-23）",
+        "default": 3
+      },
+      "min_messages_to_dream": {
+        "type": "int",
+        "description": "低于此条数时跳过每日自动模型调用（显式记忆请求除外）",
+        "default": 10
+      },
+      "max_messages_per_run": {
+        "type": "int",
+        "description": "一次 V3 读取原始消息安全上限（最多 500，按 Token 自动缩减）",
+        "default": 500
+      },
+      "max_input_tokens_per_run": {
+        "type": "int",
+        "description": "单次输入 Token 保守估算上限",
+        "default": 16000
+      },
+      "max_calls_per_group_day": {
+        "type": "int",
+        "description": "每天每群 Dreaming 最大调用次数",
+        "default": 2
+      },
+      "max_tokens_per_group_day": {
+        "type": "int",
+        "description": "每天每群 Dreaming 估算输入+输出 Token 额度",
+        "default": 40000
+      },
+      "estimated_output_tokens_per_run": {
+        "type": "int",
+        "description": "每轮为覆盖汇报和事件/画像提案预留的估算输出 Token（V3 推荐4500，可按模型调整）",
+        "default": 4500
+      }
+    }
   },
-  "embedding_model": {
-    "type": "string",
-    "description": "向量模型名称",
-    "default": ""
+  "retrieval_settings": {
+    "type": "object",
+    "description": "高级 · 记忆召回",
+    "hint": "仅在需要调整时展开；原有配置会在插件加载时无损迁移。",
+    "items": {
+      "recall_normal_chars": {
+        "type": "int",
+        "description": "普通问答可注入的记忆最大字符数",
+        "default": 2600
+      },
+      "recall_history_chars": {
+        "type": "int",
+        "description": "历史问答可注入上下文最大字符数",
+        "default": 6500
+      },
+      "recall_deep_chars": {
+        "type": "int",
+        "description": "用户要求深度分析时可注入的最大字符数",
+        "default": 24000
+      },
+      "recall_max_memories": {
+        "type": "int",
+        "description": "普通上下文记忆最多条数",
+        "default": 12
+      }
+    }
   },
-  "embedding_daily_calls": {
-    "type": "int",
-    "description": "每日每群向量索引调用上限",
-    "default": 20
+  "media_settings": {
+    "type": "object",
+    "description": "可选 · 图片音频理解",
+    "hint": "仅在需要调整时展开；原有配置会在插件加载时无损迁移。",
+    "items": {
+      "media_enabled": {
+        "type": "bool",
+        "description": "可选：分析受信任路径的媒体（默认关闭）",
+        "default": false
+      },
+      "allowed_media_roots": {
+        "type": "list",
+        "description": "允许读取的本地媒体根目录绝对路径",
+        "default": []
+      },
+      "media_api_url": {
+        "type": "string",
+        "description": "视觉/转录模型兼容 API 基础 URL（HTTPS 或本机）",
+        "default": ""
+      },
+      "media_vision_model": {
+        "type": "string",
+        "description": "图片及视频首帧理解模型",
+        "default": ""
+      },
+      "media_transcription_model": {
+        "type": "string",
+        "description": "音频转写模型",
+        "default": ""
+      },
+      "media_daily_calls": {
+        "type": "int",
+        "description": "每日每群媒体理解调用上限",
+        "default": 5
+      },
+      "media_daily_tokens": {
+        "type": "int",
+        "description": "每日每群媒体预算（估算单位，非图像计费准确值）",
+        "default": 15000
+      }
+    }
   },
-  "embedding_daily_tokens": {
-    "type": "int",
-    "description": "每日每群向量索引估算 Token 限额",
-    "default": 20000
+  "embedding_settings": {
+    "type": "object",
+    "description": "可选 · 向量检索",
+    "hint": "仅在需要调整时展开；原有配置会在插件加载时无损迁移。",
+    "items": {
+      "embedding_enabled": {
+        "type": "bool",
+        "description": "可选：为长期记忆建立向量（默认关闭；产生额外费用）",
+        "default": false
+      },
+      "embedding_api_url": {
+        "type": "string",
+        "description": "OpenAI 兼容 Embeddings API 基础 URL（要求 HTTPS 或本机）",
+        "default": ""
+      },
+      "embedding_model": {
+        "type": "string",
+        "description": "向量模型名称",
+        "default": ""
+      },
+      "embedding_daily_calls": {
+        "type": "int",
+        "description": "每日每群向量索引调用上限",
+        "default": 20
+      },
+      "embedding_daily_tokens": {
+        "type": "int",
+        "description": "每日每群向量索引估算 Token 限额",
+        "default": 20000
+      }
+    }
   },
-  "media_enabled": {
-    "type": "bool",
-    "description": "可选：分析受信任路径的媒体（默认关闭）",
-    "default": false
+  "advanced_settings": {
+    "type": "object",
+    "description": "高级 · 连接与兼容",
+    "hint": "仅在需要调整时展开；原有配置会在插件加载时无损迁移。",
+    "items": {
+      "platform_id": {
+        "type": "string",
+        "description": "AstrBot 微信 Hook 平台实例 ID",
+        "default": "wechat_pc_hook"
+      },
+      "scan_seconds": {
+        "type": "int",
+        "description": "检查间隔秒数",
+        "default": 300
+      },
+      "max_parallel_groups": {
+        "type": "int",
+        "description": "并行处理群数量（最多 4）",
+        "default": 2
+      },
+      "max_message_chars_per_run": {
+        "type": "int",
+        "description": "一次 V3 读取原始消息总字符预算（仍受模型 Token 限额约束）",
+        "default": 45000
+      },
+      "max_existing_per_member": {
+        "type": "int",
+        "description": "单成员携带已有记忆条数",
+        "default": 12
+      },
+      "retry_delay_seconds": {
+        "type": "int",
+        "description": "Dreaming 失败重试至少间隔多少秒",
+        "default": 600
+      },
+      "hook_inbox_db": {
+        "type": "string",
+        "description": "通常留空，自动从运行中的 Hook 连接器读取真实 Inbox 路径；仅特殊部署需要手动填写（容器内路径）",
+        "default": ""
+      },
+      "enable_private_profile_commands": {
+        "type": "bool",
+        "description": "允许用户私聊自主管理全局个人画像和群内退出",
+        "default": true
+      },
+      "max_changes_per_run": {
+        "type": "int",
+        "description": "单次最多生成多少个持久化变更（最多 8）",
+        "default": 8,
+        "invisible": true
+      },
+      "analysis_batch_soft_limit": {
+        "type": "int",
+        "description": "旧 V2 专用；V3 采用动态 Token 分批，不受 100 条硬限制",
+        "default": 60,
+        "invisible": true
+      },
+      "dreaming_v2_enabled": {
+        "type": "bool",
+        "description": "启用 V2 话题与观察积累策略（实验版，默认关闭；需要数据库 V3）",
+        "default": false,
+        "invisible": true
+      }
+    }
   },
-  "allowed_media_roots": {
-    "type": "list",
-    "description": "允许读取的本地媒体根目录绝对路径",
-    "default": []
-  },
-  "media_api_url": {
-    "type": "string",
-    "description": "视觉/转录模型兼容 API 基础 URL（HTTPS 或本机）",
-    "default": ""
-  },
-  "media_vision_model": {
-    "type": "string",
-    "description": "图片及视频首帧理解模型",
-    "default": ""
-  },
-  "media_transcription_model": {
-    "type": "string",
-    "description": "音频转写模型",
-    "default": ""
-  },
-  "media_daily_calls": {
-    "type": "int",
-    "description": "每日每群媒体理解调用上限",
-    "default": 5
-  },
-  "media_daily_tokens": {
-    "type": "int",
-    "description": "每日每群媒体预算（估算单位，非图像计费准确值）",
-    "default": 15000
-  },
-  "estimated_output_tokens_per_run": {
-    "type": "int",
-    "description": "每轮为覆盖汇报和事件/画像提案预留的估算输出 Token（V3 推荐4500，可按模型调整）",
-    "default": 4500
-  },
-  "max_cost_per_group_day_usd": {
-    "type": "float",
-    "description": "后台 Dreaming 每群每日估算美元金额预检，0 禁用，需配置价格",
-    "default": 0
-  },
-  "input_price_usd_per_million": {
-    "type": "float",
-    "description": "当前 Dreaming Provider 每百万输入 Token 美元单价，0 表示未配置",
-    "default": 0
-  },
-  "output_price_usd_per_million": {
-    "type": "float",
-    "description": "当前 Dreaming Provider 每百万输出 Token 美元单价，0 表示未配置",
-    "default": 0
+  "pricing_settings": {
+    "type": "object",
+    "description": "高级 · 成本估算",
+    "hint": "仅在需要调整时展开；原有配置会在插件加载时无损迁移。",
+    "items": {
+      "max_cost_per_group_day_usd": {
+        "type": "float",
+        "description": "后台 Dreaming 每群每日估算美元金额预检，0 禁用，需配置价格",
+        "default": 0
+      },
+      "input_price_usd_per_million": {
+        "type": "float",
+        "description": "当前 Dreaming Provider 每百万输入 Token 美元单价，0 表示未配置",
+        "default": 0
+      },
+      "output_price_usd_per_million": {
+        "type": "float",
+        "description": "当前 Dreaming Provider 每百万输出 Token 美元单价，0 表示未配置",
+        "default": 0
+      }
+    }
   },
   "dreaming_v3_enabled": {
     "type": "bool",
     "description": "启用全新的 V3 事件/主张/证据画像引擎（启用后替代旧 V2 提取；原始消息保留）",
-    "default": true
+    "default": true,
+    "invisible": true
+  },
+  "__ui_schema_version": {
+    "type": "int",
+    "default": 0,
+    "invisible": true,
+    "description": "内部配置迁移版本"
   }
 }
