@@ -1,4 +1,4 @@
-"""Incremental SQLite schema for Dreaming V2; safe for existing v0.2.2 data."""
+"""Incremental SQLite schema migrations for Dreaming V2; no raw data resets."""
 from __future__ import annotations
 
 import sqlite3
@@ -54,6 +54,9 @@ DDL = (
        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""",
     """CREATE INDEX IF NOT EXISTS reanalysis_scope
        ON reanalysis_jobs(platform,owner,room,status,created_at)""",
+    """CREATE TABLE IF NOT EXISTS dream_run_previews (
+       run_id TEXT PRIMARY KEY REFERENCES dream_runs(id) ON DELETE CASCADE,
+       payload_json TEXT NOT NULL, created_at INTEGER NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS dream_run_details (
        run_id TEXT PRIMARY KEY REFERENCES dream_runs(id) ON DELETE CASCADE,
        mode TEXT NOT NULL DEFAULT 'live',
@@ -68,16 +71,16 @@ DDL = (
 
 def migrate(db: sqlite3.Connection) -> None:
     version = int(db.execute('PRAGMA user_version').fetchone()[0])
-    if version > 3:
+    if version > 4:
         raise RuntimeError('Memory database was created by a newer plugin')
-    if version == 3:
+    if version == 4:
         return
     # DDL through execute(), not executescript(), to preserve transaction atomicity.
     db.execute('BEGIN IMMEDIATE')
     try:
         for statement in DDL:
             db.execute(statement)
-        db.execute('PRAGMA user_version=3')
+        db.execute('PRAGMA user_version=4')
         db.execute('COMMIT')
     except BaseException:
         if db.in_transaction:
