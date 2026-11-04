@@ -69,12 +69,15 @@ async function api(operation,data={}){
 async function work(fn){
   if(state.busy)return;
   state.busy=true;
-  document.querySelectorAll('button').forEach(b=>b.disabled=true);
+  const disabled=[];
+  document.querySelectorAll('button').forEach(b=>{
+    if(!b.disabled&&!b.closest('dialog')){b.disabled=true;disabled.push(b);}
+  });
   try{await fn();}
   catch(err){notice(err?.message||'操作未成功，请查看插件日志',true);}
   finally{
     state.busy=false;
-    document.querySelectorAll('button').forEach(b=>b.disabled=false);
+    disabled.forEach(b=>b.disabled=false);
   }
 }
 function confirmAction(text){
