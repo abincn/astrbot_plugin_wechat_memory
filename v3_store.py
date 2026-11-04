@@ -327,3 +327,45 @@ def erase_member(store,s,user):
            AND status IN ('active','candidate') AND
            NOT EXISTS(SELECT 1 FROM claim_evidence e WHERE e.claim_id=memory_claims.id)""",
         (now(),*key(s)))
+
+
+def revise_claim(store,s,ident,expected,action,actor,content=''):
+    """Administrator CAS edit/approve/retract with a durable previous-version record."""
+    if action not in ('edit','approve','retract'):
+        raise ValueError('Unsupported V3 claim action')
+    if not isinstance(expected,int):raise ValueError('Expected revision required')
+    with store.transaction():
+        r=_in_scope(store.db,s,'memory_claims',ident)
+        if not r:raise ValueError('Claim not in group')
+        if r['revision']!=expected:raise ValueError('Claim revision changed')
+        if action=='edit':
+            if not isinstance(content,str) or not 1<=len(content.strip())<=600:
+                raise ValueError('Invalid edited claim content')
+            new_content=content.strip()
+            status='active'
+        elif action=='approve':
+            if r['status'] not in ('candidate','review'):raise ValueError('Claim is not pending review')
+            new_content=r['content'];status='active'
+        else:
+            new_content=r['content'];status='retracted'
+        store.db.execute(
+            """INSERT INTO memory_claim_versions
+               (claim_id,revision,previous_content,previous_status,actor,reason,occurred_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (ident,r['revision'],r['content'],r['status'],actor[:100],action,now()))
+        cur=store.db.execute(
+            """UPDATE memory_claims SET content=?,status=?,revision=revision+1,updated_at=?
+               WHERE id=? AND platform=? AND owner=? AND room=? AND revision=?""",
+            (new_content,status,now(),ident,*key(s),expected))
+        if cur.rowcount!=1:raise RuntimeError('Concurrent claim edit')
+        return {'id':ident,'revision':expected+1,'status':status}
+
+
+def claim_versions(store,s,ident,limit=60):
+    with store._lock:
+        if not _in_scope(store.db,s,'memory_claims',ident):
+            raise ValueError('Claim not in group')
+        return [dict(r) for r in store.db.execute(
+            """SELECT revision,previous_content,previous_status,actor,reason,occurred_at
+               FROM memory_claim_versions WHERE claim_id=? ORDER BY id DESC LIMIT ?""",
+            (ident,max(1,min(limit,100))))]
