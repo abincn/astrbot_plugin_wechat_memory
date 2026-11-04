@@ -783,7 +783,7 @@ class MemoryStore:
         with self.transaction():
             busy=self.db.execute(
                 """SELECT id FROM reanalysis_jobs WHERE platform=? AND owner=? AND room=?
-                   AND status IN ('pending','running') LIMIT 1""",self._key(s)).fetchone()
+                   AND status IN ('pending','running','paused','failed') LIMIT 1""",self._key(s)).fetchone()
             if busy:raise ValueError('当前群已有运行中的历史重分析任务')
             self.db.execute(
                 """INSERT INTO reanalysis_jobs(id,platform,owner,room,start_raw_id,end_raw_id,
