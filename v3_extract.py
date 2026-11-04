@@ -50,7 +50,7 @@ SENSITIVITY={'normal','personal','restricted'}
 def build_prompt(scope, messages, events, claims):
     obj={
         'scope':'this authorized wechat group only',
-        'events':[{k:r[k] for k in ('id','title','anchor_date','state','summary')} for r in events],
+        'events':[{k:r[k] for k in ('id','title','anchor_date','state','summary','revision')} for r in events],
         'claims':[{k:r[k] for k in ('id','event_id','subject_type','subject_id','claim_type',
                 'predicate','content','attribution','confidence','revision')} for r in claims],
         'messages':[{k:m[k] for k in ('message_id','sender_id','message_at','text','reply_to_id')} for m in messages],
