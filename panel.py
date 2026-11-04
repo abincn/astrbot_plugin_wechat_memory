@@ -196,12 +196,13 @@ class MemoryPanel:
                 self.store,s,ident,int(payload.get('revision',-1)),
                 op.removeprefix('v3_claim_'),actor,
                 str(payload.get('content','')) if op=='v3_claim_edit' else '')
-        if op in ('v3_events','v3_claims','v3_profiles','v3_coverage','v3_sources'):
+        if op in ('v3_events','v3_claims','v3_profiles','v3_coverage','v3_sources','v3_event_sources'):
             from . import v3_store
             if op=='v3_events':return {'items':v3_store.events(self.store,s)}
             if op=='v3_claims':return {'items':v3_store.claims(self.store,s)}
             if op=='v3_profiles':return {'items':v3_store.profiles(self.store,s)}
             if op=='v3_coverage':return {'items':v3_store.coverage(self.store,s)}
+            if op=='v3_event_sources':return {'items':v3_store.event_sources(self.store,s,str(payload.get('id',''))[:64])}
             return {'items':v3_store.sources(self.store,s,str(payload.get('id',''))[:64])}
         if op=='replay_prepare':
             if not self.config.get('dreaming_v2_enabled') or not self.config.get('reanalysis_enabled'):
