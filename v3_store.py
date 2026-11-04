@@ -147,13 +147,17 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                 status='active' if confidence in ('confirmed','supported') else 'candidate'
                 if item['attribution']=='third_party_statement' and confidence=='confirmed':
                     confidence='reported';status='candidate'
+                # A changed factual statement is a separate reviewable candidate, not a
+                # silent overwrite of established evidence or an invisible rejected change.
+                conflicting=bool(ident and row and row['content']!=item['content'])
+                if conflicting:
+                    ident=''
+                    status='review'
                 if ident:
                     # Do not silently overwrite an edited or retracted record.
                     row=_in_scope(store.db,s,'memory_claims',ident)
                     if row['status'] in ('retracted','superseded'):continue
-                    if row['content']!=item['content'] or row['confidence']!=confidence:
-                        if row['content']!=item['content']:
-                            status='review' # conflicting update requires review
+                    if row['confidence']!=confidence:
                         store.db.execute(
                             """UPDATE memory_claims SET confidence=?,status=?,
                                last_supported=MAX(last_supported,?),updated_at=?,
