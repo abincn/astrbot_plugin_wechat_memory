@@ -181,7 +181,7 @@ async def analyze(context, provider_id, scope, messages, events, claims, timeout
     prompt=build_prompt(scope,messages,events,claims)
     async with asyncio.timeout(timeout):
         resp=await context.llm_generate(chat_provider_id=provider_id,prompt=prompt,
-                                        system_prompt=SYSTEM,tools=ToolSet())
+                                        system_prompt=SYSTEM+'\n本批必须回传的 batch_key：'+batch_coverage_key(messages),\n                                        tools=ToolSet())
     if getattr(resp,'role','assistant')!='assistant' or getattr(resp,'tools_call_name',None):
         raise ValueError('Provider did not return plain V3 response')
     result=parse(getattr(resp,'completion_text',''),messages,events,claims)
