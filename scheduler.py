@@ -7,7 +7,8 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from astrbot.api import logger
-from .extraction import analyze, build_input, estimate_tokens, SYSTEM
+from .extraction import (analyze, analyze_v2, build_input, build_input_v2,
+                         estimate_tokens, SYSTEM, SYSTEM_V2)
 from .evolution import apply
 from .storage import now,day_key
 
@@ -46,7 +47,13 @@ class MemoryScheduler:
             r=self.store.db.execute('''SELECT last_success FROM room_state WHERE platform=? AND owner=? AND room=?''',
                                     self.store._key(s)).fetchone()
         last=int(r['last_success']) if r else 0
-        if last and dt.datetime.fromtimestamp(last,zone).date()==current.date():return False
+        if last and dt.datetime.fromtimestamp(last,zone).date()==current.date():
+            if not cfg.get('dreaming_v2_enabled',False):
+                return False
+            # V2 may process additional accumulated batches, bounded by daily budget.
+            count,_=self.store.backlog(s)
+            if count < max(1,int(cfg.get('min_messages_to_dream',10))):
+                return False
         return True
 
     async def _run(self):
@@ -79,7 +86,7 @@ class MemoryScheduler:
                 await self.run_scope(s,force=bool(count<max(1,int(self.config.get('min_messages_to_dream',10)))))
         await asyncio.gather(*(one(s) for s in self.store.due_scopes()),return_exceptions=False)
 
-    async def run_scope(self,s,*,dry_run=False,force=False):
+    async def run_scope(self,s,*,dry_run=False,force=False,replay_job_id=''):
         cfg=self.config
         if not cfg.get('enabled') or not cfg.get('extraction_provider_id'):
             return {'status':'disabled','reason':'No provider configured'}
@@ -88,21 +95,41 @@ class MemoryScheduler:
         holder=uuid.uuid4().hex
         if not self.store.acquire(s,holder,ttl=140):return {'status':'busy'}
         try:
-            cursor,batch,end=self.store.pending_batch(s,
-                max_messages=max(1,min(500,int(cfg.get('max_messages_per_run',250)))),
-                max_chars=max(500,min(120000,int(cfg.get('max_message_chars_per_run',20000)))))
+            max_messages=max(1,min(500,int(cfg.get('max_messages_per_run',250))))
+            max_chars=max(500,min(120000,int(cfg.get('max_message_chars_per_run',20000))))
+            if replay_job_id:
+                if not cfg.get('dreaming_v2_enabled',False):
+                    return {'status':'disabled','reason':'V2 not enabled'}
+                job=self.store.replay_job(s,replay_job_id)
+                if not job or job['status']!='running':
+                    return {'status':'denied','reason':'History job not running'}
+                cursor,batch,end=self.store.replay_batch(
+                    s,job['next_raw_id'],job['end_raw_id'],max_messages,max_chars)
+            else:
+                cursor,batch,end=self.store.pending_batch(
+                    s,max_messages=max_messages,max_chars=max_chars)
             if not batch:
-                if end>cursor and not dry_run:self.store.advance(s,cursor,end)
+                if replay_job_id and end>cursor:
+                    self.store.replay_advance_empty(s,replay_job_id,cursor,end)
+                elif end>cursor and not dry_run:
+                    self.store.advance(s,cursor,end)
                 return {'status':'empty','cursor':end}
             if not force and len(batch)<max(1,int(cfg.get('min_messages_to_dream',10))):
                 return {'status':'insufficient','messages':len(batch)}
             users={m['sender_id'] for m in batch}
             existing=self.store.get_context_records(s,users,
                 limit_per_user=max(1,min(30,int(cfg.get('max_existing_per_member',12)))))
+            v2_enabled=bool(cfg.get('dreaming_v2_enabled',False))
+            topics,observations=self.store.v2_context(s,users) if v2_enabled else ([],[])
+            if v2_enabled:
+                soft=max(1,min(100,int(cfg.get('analysis_batch_soft_limit',60))))
+                if len(batch)>soft:
+                    batch=batch[:soft]
+                    end=batch[-1]['id']
             cap=max(1000,int(cfg.get('max_input_tokens_per_run',16000)))
             # Reduce at complete message boundaries; the unprocessed remainder remains in raw archive.
             while batch:
-                estimate=estimate_tokens(build_input(s,batch,existing)+SYSTEM)
+                estimate=estimate_tokens(build_input_v2(s,batch,existing,topics,observations)+SYSTEM_V2) if v2_enabled else estimate_tokens(build_input(s,batch,existing)+SYSTEM)
                 if estimate<=cap:break
                 batch.pop();end=batch[-1]['id'] if batch else cursor
             if not batch:
@@ -119,14 +146,22 @@ class MemoryScheduler:
             rid=self.store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
             counted_in=estimate;counted_out=0;is_estimated=True;failed=True
             try:
-                changes,est,in_tok,out_tok,is_estimated=await analyze(self.context,
-                    cfg['extraction_provider_id'],s,batch,existing)
+                if v2_enabled:
+                    v2,est,in_tok,out_tok,is_estimated=await analyze_v2(
+                        self.context,cfg['extraction_provider_id'],s,batch,existing,topics,observations)
+                    changes=v2['changes']
+                else:
+                    v2=None
+                    changes,est,in_tok,out_tok,is_estimated=await analyze(
+                        self.context,cfg['extraction_provider_id'],s,batch,existing)
                 counted_in=in_tok;counted_out=out_tok
                 if self._stop.is_set() or s.room not in self.allowed_rooms or not cfg.get('enabled') or self.store.options(s):
                     raise PermissionError('Room disabled during evolution')
                 if not self.store.lease_held(s,holder):raise RuntimeError('Lost Dreaming lease')
                 report=apply(self.store,s,rid,cursor,end,changes,batch,existing,dry_run=dry_run,
-                             max_changes=max(1,min(10,int(cfg.get('max_changes_per_run',8)))))
+                             max_changes=max(1,min(10,int(cfg.get('max_changes_per_run',8)))),
+                             v2=v2,existing_topics=topics,existing_observations=observations,
+                             replay_job_id=replay_job_id)
                 failed=False
                 self.store.finish_run(rid,'preview' if dry_run else 'committed',report['changed'],
                                       actual_in=in_tok if not is_estimated else None,
@@ -144,7 +179,8 @@ class MemoryScheduler:
                 return report
             except Exception as exc:
                 self.store.finish_run(rid,'failed',error=type(exc).__name__)
-                self.store.fail_scope(s,type(exc).__name__,max(120,int(cfg.get('retry_delay_seconds',600))))
+                if not replay_job_id:
+                    self.store.fail_scope(s,type(exc).__name__,max(120,int(cfg.get('retry_delay_seconds',600))))
                 logger.warning('[wechat_memory] Dreaming failed room=%s type=%s',s.room,type(exc).__name__)
                 return {'status':'failed','run_id':rid,'reason':type(exc).__name__}
             finally:

@@ -17,7 +17,7 @@ class MemoryPanel:
     def __init__(self,context,store,config,allowed_rooms,scheduler):
         self.context=context
         self.store=store;self.config=config;self.allowed_rooms=allowed_rooms
-        self.scheduler=scheduler;self.active=True;self.tasks=set()
+        self.scheduler=scheduler;self.active=True;self.tasks=set();self.replay_tasks={}
         context.register_web_api('/astrbot_plugin_wechat_memory/manage',self.handle,
                                  ['POST'],'微信群长期记忆与 Dreaming 工作台')
 
@@ -31,6 +31,44 @@ class MemoryPanel:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         return {'scheduled':True,'running_tasks':len(self.tasks)}
+
+    def _start_replay(self,s,job_id):
+        current=self.replay_tasks.get(job_id)
+        if current and not current.done():
+            return {'scheduled':False,'job_id':job_id}
+        task=asyncio.create_task(self._replay_worker(s,job_id))
+        self.replay_tasks[job_id]=task
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        task.add_done_callback(lambda finished:self.replay_tasks.pop(job_id,None)
+                               if self.replay_tasks.get(job_id) is finished else None)
+        return {'scheduled':True,'job_id':job_id}
+
+    async def _replay_worker(self,s,job_id):
+        try:
+            while self.active:
+                job=self.store.replay_job(s,job_id)
+                if not job or job['status']!='running':return
+                if job['next_raw_id']>job['end_raw_id']:
+                    self.store.replay_status(s,job_id,'completed')
+                    return
+                result=await self.scheduler.run_scope(
+                    s,force=True,dry_run=job['mode']=='preview',replay_job_id=job_id)
+                current=self.store.replay_job(s,job_id)
+                if not current or current['status']!='running':
+                    return
+                if result['status'] in ('committed','preview','empty'):
+                    continue
+                status='paused' if result['status'] in ('busy','budget_exceeded','oversize','insufficient') else 'failed'
+                self.store.replay_status(s,job_id,status,str(result.get('reason',result['status'])))
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A concurrent pause/cancel may already have changed the job state.
+            job=self.store.replay_job(s,job_id)
+            if job and job['status']=='running':
+                self.store.replay_status(s,job_id,'failed',type(exc).__name__)
 
     async def handle(self):
         allowed={x.strip() for x in self.config.get('admin_users',[]) if isinstance(x,str) and x.strip()}
@@ -72,6 +110,28 @@ class MemoryPanel:
                     selected_owner=s.owner)
                 result['source']='hook-inbox'
                 return json_response(result,headers={'Cache-Control':'no-store'})
+            if op in ('replay_start','replay_resume','replay_pause','replay_cancel'):
+                if not self.config.get('dreaming_v2_enabled') or not self.config.get('reanalysis_enabled'):
+                    raise ValueError('请先启用 dreaming_v2_enabled 和 reanalysis_enabled')
+                s=self._scope(payload)
+                if op=='replay_start':
+                    if payload.get('confirmed') is not True:
+                        raise ValueError('请先确认历史重分析范围及费用')
+                    job=self.store.replay_create(
+                        s,str(actor),int(payload.get('from_id',1)),
+                        int(payload.get('to_id',0)),str(payload.get('mode','preview')))
+                    self.store.replay_status(s,job['id'],'running')
+                    return json_response({**job,**self._start_replay(s,job['id'])})
+                job_id=str(payload.get('job_id',''))
+                job=self.store.replay_job(s,job_id)
+                if not job:raise ValueError('找不到当前群的历史重分析任务')
+                if op=='replay_resume':
+                    if job['status'] in ('completed','cancelled'):
+                        raise ValueError('历史重分析任务已结束')
+                    self.store.replay_status(s,job_id,'running')
+                    return json_response(self._start_replay(s,job_id))
+                self.store.replay_status(s,job_id,'paused' if op=='replay_pause' else 'cancelled')
+                return json_response({'job_id':job_id,'status':'paused' if op=='replay_pause' else 'cancelled'})
             data=await asyncio.to_thread(self._execute,payload,str(actor))
             return json_response(data,headers={'Cache-Control':'no-store'})
         except PermissionError:
@@ -79,6 +139,8 @@ class MemoryPanel:
         except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
             if payload.get('operation')=='backfill':
                 return error_response('Hook Inbox 补录失败：'+str(exc)[:400],status_code=400)
+            if str(payload.get('operation','')).startswith('replay_'):
+                return error_response('历史重分析：'+str(exc)[:200],status_code=400)
             return error_response('操作参数、来源或版本无效，请查看群配置及记录状态。',status_code=400)
         except OSError as exc:
             if payload.get('operation')=='backfill':
@@ -116,7 +178,20 @@ class MemoryPanel:
         if op=='sources':
             return {'sources':self.store.sources(s,str(payload.get('id',''))[:64])}
         if op=='history':return {'items':self.store.history(s)}
-        if op=='runs':return {'items':self.store.list_runs(s)}
+        if op=='replay_prepare':
+            if not self.config.get('dreaming_v2_enabled') or not self.config.get('reanalysis_enabled'):
+                raise ValueError('历史重分析未启用')
+            return self.store.replay_prepare(s,int(payload.get('from_id',1)),
+                                                 int(payload.get('to_id',0)))
+        if op=='replay_jobs':return {'items':self.store.replay_jobs(s)}
+        if op=='topics':return {'items':self.store.list_topics(s)}
+        if op=='observations':return {'items':self.store.list_observations(s)}
+        if op=='runs':
+            rows=self.store.list_runs(s)
+            for row in rows:
+                detail=self.store.v2_run_detail(s,row['id'])
+                if detail:row['v2_detail']=detail
+            return {'items':rows}
         if op=='candidates':return {'items':self.store.candidates(s,status=str(payload.get('status',''))[:20])}
         if op=='retrieval_audit':return {'items':self.store.retrieval_audit(s)}
         if op=='versions':

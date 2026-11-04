@@ -29,6 +29,11 @@
     "description": "启用后台定时记忆综合（默认关闭）",
     "default": false
   },
+  "dreaming_v2_enabled": {
+    "type": "bool",
+    "description": "启用 V2 话题与观察积累策略（实验版，默认关闭；需要数据库 V3）",
+    "default": false
+  },
   "extraction_provider_id": {
     "type": "string",
     "_special": "select_provider",
@@ -64,6 +69,11 @@
     "type": "int",
     "description": "一次 Dreaming 最多输入消息数（最多 500）",
     "default": 250
+  },
+  "analysis_batch_soft_limit": {
+    "type": "int",
+    "description": "V2 每次模型分析的有效文本消息软上限（1–100，默认60）",
+    "default": 60
   },
   "max_message_chars_per_run": {
     "type": "int",
@@ -133,6 +143,11 @@
   "backfill_enabled": {
     "type": "bool",
     "description": "允许管理员从既有 Hook Inbox 只读补录历史",
+    "default": false
+  },
+  "reanalysis_enabled": {
+    "type": "bool",
+    "description": "允许管理员按群启动历史重新分析（需要先启用 Dreaming V2；默认关闭）",
     "default": false
   },
   "hook_inbox_db": {
@@ -208,16 +223,16 @@
   "max_cost_per_group_day_usd": {
     "type": "float",
     "description": "后台 Dreaming 每群每日估算美元金额预检，0 禁用，需配置价格",
-    "default": 0.0
+    "default": 0
   },
   "input_price_usd_per_million": {
     "type": "float",
     "description": "当前 Dreaming Provider 每百万输入 Token 美元单价，0 表示未配置",
-    "default": 0.0
+    "default": 0
   },
   "output_price_usd_per_million": {
     "type": "float",
     "description": "当前 Dreaming Provider 每百万输出 Token 美元单价，0 表示未配置",
-    "default": 0.0
+    "default": 0
   }
 }

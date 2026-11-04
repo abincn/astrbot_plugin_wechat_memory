@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 from .identity import Scope
+from .schema_v3 import migrate
 from .policy import fingerprint, safe_content, topic_key
 
 
@@ -154,7 +155,6 @@ class MemoryStore:
               raw_ids TEXT NOT NULL, chars INTEGER NOT NULL,
               mode TEXT NOT NULL, created_at INTEGER NOT NULL
             );
-            PRAGMA user_version=2;
             ''')
             self._fts = False
             try:
@@ -170,6 +170,7 @@ class MemoryStore:
                 self._fts = True
             except sqlite3.OperationalError:
                 pass
+            migrate(self.db)
 
     @contextlib.contextmanager
     def transaction(self):
@@ -622,6 +623,11 @@ class MemoryStore:
                 DO UPDATE SET disabled=excluded.disabled,changed_at=excluded.changed_at''',
                 (*self._key(s),user,int(disabled),now()))
             if disabled:
+                self.db.execute(
+                    """UPDATE observation_signals SET status='invalidated',content='',
+                       updated_at=? WHERE platform=? AND owner=? AND room=?
+                       AND scope='member' AND subject_id=?""",
+                    (now(),*self._key(s),user))
                 rows=self.db.execute('''SELECT * FROM memories WHERE platform=? AND owner=? AND room=?
                     AND scope='member' AND subject_id=? AND status!='deleted' ''',(*self._key(s),user)).fetchall()
                 for m in rows:
@@ -663,6 +669,28 @@ class MemoryStore:
                 if linked.intersection(erased_ids):
                     self.db.execute('''UPDATE dream_candidates SET old_content='',new_content='',reason='',
                         sources_json='[]',status='redacted',error='source_erasure' WHERE id=?''',(candidate['id'],))
+            # Redact derivative texts containing the user's source evidence before
+            # cascading deletion of the raw source links.
+            self.db.execute(
+                """UPDATE observation_signals SET status='invalidated',content='',
+                   updated_at=? WHERE id IN (
+                     SELECT DISTINCT x.observation_id FROM observation_sources x
+                     JOIN raw_messages m ON m.id=x.raw_id
+                     WHERE m.platform=? AND m.owner=? AND m.room=? AND m.sender_id=?)""",
+                (now(),*self._key(s),user))
+            self.db.execute(
+                """UPDATE observation_signals SET status='invalidated',content='',
+                   updated_at=? WHERE platform=? AND owner=? AND room=?
+                   AND scope='member' AND subject_id=?""",
+                (now(),*self._key(s),user))
+            self.db.execute(
+                """UPDATE topic_states SET title='历史话题（证据已清除）',
+                   summary='',state='closed',updated_at=?
+                   WHERE id IN (
+                     SELECT DISTINCT x.topic_id FROM topic_sources x
+                     JOIN raw_messages m ON m.id=x.raw_id
+                     WHERE m.platform=? AND m.owner=? AND m.room=? AND m.sender_id=?)""",
+                (now(),*self._key(s),user))
             erased=self.db.execute('''DELETE FROM raw_messages WHERE platform=? AND owner=? AND room=? AND sender_id=?''',
                                    (*self._key(s),user)).rowcount
             self.db.execute('''DELETE FROM retrieval_audit WHERE platform=? AND owner=? AND room=? AND requester=?''',
@@ -676,3 +704,150 @@ class MemoryStore:
                (now(),*self._key(s)))
         self.refresh_snapshot(s,'')
         return {'raw_removed':erased,'profile_removed':len(memories)}
+
+    # Dreaming V2: all queries remain scoped to the bot account and group.
+    def v2_context(self, s: Scope, senders: set[str], topic_limit: int = 8,
+                   observation_limit: int = 24) -> tuple[list[dict], list[dict]]:
+        with self._lock:
+            topics = [dict(r) for r in self.db.execute(
+                """SELECT id,title,summary,state,revision FROM topic_states
+                   WHERE platform=? AND owner=? AND room=?
+                   ORDER BY last_message_at DESC LIMIT ?""",
+                (*self._key(s), min(12, max(1, topic_limit))))]
+            users = sorted(sender for sender in senders if not self.is_opted_out(s, sender))
+            if users:
+                placeholders = ','.join('?' for _ in users[:60])
+                query = ("""SELECT id,scope,subject_id,signal_type,content,evidence_type,
+                            status,revision,topic_id FROM observation_signals
+                            WHERE platform=? AND owner=? AND room=? AND status='observing'
+                            AND (scope='group' OR subject_id IN (""" + placeholders +
+                         """)) ORDER BY updated_at DESC LIMIT ?""")
+                params = (*self._key(s), *users[:60], min(40, max(1, observation_limit)))
+            else:
+                query = """SELECT id,scope,subject_id,signal_type,content,evidence_type,
+                           status,revision,topic_id FROM observation_signals
+                           WHERE platform=? AND owner=? AND room=? AND status='observing'
+                           AND scope='group' ORDER BY updated_at DESC LIMIT ?"""
+                params = (*self._key(s), min(40, max(1, observation_limit)))
+            observations = [dict(r) for r in self.db.execute(query, params)]
+            return topics, observations
+
+    def list_topics(self, s: Scope, limit: int = 50) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.db.execute(
+                """SELECT t.*,(SELECT COUNT(*) FROM topic_sources x WHERE x.topic_id=t.id) source_count
+                   FROM topic_states t WHERE platform=? AND owner=? AND room=?
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (*self._key(s), min(100, max(1, limit))))]
+
+    def list_observations(self, s: Scope, limit: int = 100) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.db.execute(
+                """SELECT o.*,(SELECT COUNT(*) FROM observation_sources x
+                   WHERE x.observation_id=o.id) source_count
+                   FROM observation_signals o WHERE platform=? AND owner=? AND room=?
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (*self._key(s), min(200, max(1, limit))))]
+
+    def v2_run_detail(self, s: Scope, run_id: str) -> dict | None:
+        with self._lock:
+            r = self.db.execute(
+                """SELECT d.* FROM dream_run_details d JOIN dream_runs r ON r.id=d.run_id
+                   WHERE r.id=? AND r.platform=? AND r.owner=? AND r.room=?""",
+                (run_id, *self._key(s))).fetchone()
+            return dict(r) if r else None
+
+
+    def replay_prepare(self, s: Scope, start: int, end: int) -> dict:
+        with self._lock:
+            bounds=self.db.execute(
+                """SELECT COUNT(*) n,COALESCE(MAX(id),0) max_id FROM raw_messages
+                   WHERE platform=? AND owner=? AND room=?""",self._key(s)).fetchone()
+            maximum=int(bounds['max_id'])
+            if maximum==0:
+                raise ValueError('该群没有原始消息')
+            start=int(start);end=int(end) if end else maximum
+            if start<1 or end<start or end>maximum:
+                raise ValueError('历史重分析 ID 范围不合法')
+            total=self.db.execute(
+                """SELECT COUNT(*) FROM raw_messages WHERE platform=? AND owner=? AND room=?
+                   AND id BETWEEN ? AND ?""",(*self._key(s),start,end)).fetchone()[0]
+            if total==0:
+                raise ValueError('指定范围没有该群的原始消息')
+            return {'from_id':start,'to_id':end,'rows':total,'source_max_id':maximum}
+
+    def replay_create(self,s:Scope,actor:str,start:int,end:int,mode:str)->dict:
+        if mode not in ('preview','apply'):
+            raise ValueError('Invalid replay mode')
+        scope=self.replay_prepare(s,start,end)
+        rid=uuid.uuid4().hex
+        with self.transaction():
+            busy=self.db.execute(
+                """SELECT id FROM reanalysis_jobs WHERE platform=? AND owner=? AND room=?
+                   AND status IN ('pending','running','paused','failed') LIMIT 1""",self._key(s)).fetchone()
+            if busy:raise ValueError('当前群已有运行中的历史重分析任务')
+            self.db.execute(
+                """INSERT INTO reanalysis_jobs(id,platform,owner,room,start_raw_id,end_raw_id,
+                   next_raw_id,status,mode,actor,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (rid,*self._key(s),scope['from_id'],scope['to_id'],scope['from_id'],
+                 'pending',mode,str(actor)[:100],now(),now()))
+        return {'id':rid,**scope,'status':'pending','mode':mode}
+
+    def replay_job(self,s:Scope,rid:str)->dict|None:
+        with self._lock:
+            r=self.db.execute(
+                """SELECT * FROM reanalysis_jobs WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (rid,*self._key(s))).fetchone()
+            return dict(r) if r else None
+
+    def replay_jobs(self,s:Scope,limit:int=30)->list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.db.execute(
+                """SELECT * FROM reanalysis_jobs WHERE platform=? AND owner=? AND room=?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (*self._key(s),min(50,max(1,limit))))]
+
+    def replay_status(self,s:Scope,rid:str,status:str,error:str=''):
+        if status not in ('pending','running','paused','completed','failed','cancelled'):
+            raise ValueError('Invalid replay status')
+        with self.transaction():
+            row=self.db.execute(
+                """SELECT status FROM reanalysis_jobs WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (rid,*self._key(s))).fetchone()
+            if not row:raise ValueError('History job not found')
+            if row['status'] in ('completed','cancelled'):
+                raise ValueError('History job has already stopped')
+            self.db.execute(
+                """UPDATE reanalysis_jobs SET status=?,last_error=?,updated_at=?
+                   WHERE id=? AND platform=? AND owner=? AND room=?""",
+                (status,error[:160],now(),rid,*self._key(s)))
+
+    def replay_batch(self,s:Scope,start:int,end_limit:int,max_messages:int,max_chars:int):
+        with self._lock:
+            rows=[dict(r) for r in self.db.execute(
+                """SELECT id,message_id,sender_id,text,kind,message_at,reply_to_id,urgent,source
+                   FROM raw_messages WHERE platform=? AND owner=? AND room=?
+                   AND id>=? AND id<=? ORDER BY id LIMIT ?""",
+                (*self._key(s),start,end_limit,min(max(1,max_messages),500)))]
+            if not rows:
+                return start-1,[],end_limit
+            selected=[];length=0;last=start-1
+            for row in rows:
+                if row['kind'] not in ('text','media_text') or not row['text']:
+                    last=row['id'];continue
+                if len(row['text'])>max_chars:
+                    if selected:break
+                    last=row['id'];continue
+                if length+len(row['text'])>max_chars:break
+                selected.append(row);length+=len(row['text']);last=row['id']
+            return start-1,selected,last
+
+    def replay_advance_empty(self,s:Scope,job_id:str,start_cursor:int,end:int):
+        with self.transaction():
+            cur=self.db.execute(
+                """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
+                   updated_at=? WHERE id=? AND platform=? AND owner=? AND room=?
+                   AND status='running' AND next_raw_id=?""",
+                (end+1,now(),job_id,*self._key(s),start_cursor+1))
+            if cur.rowcount!=1:raise RuntimeError('History job advanced concurrently')

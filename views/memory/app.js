@@ -23,12 +23,15 @@ async function list(){let op=state.view==='memories'?'list':state.view;
 const args=op==='list'?{status:$('filter-status').value,kind:$('filter-kind').value,query:$('query').value.trim()}:{};
 const r=await api(op,args);state.rows=r.items||[];state.selected=null;
 $('memory-filters').hidden=state.view!=='memories';$('add').hidden=state.view!=='memories';
-const titles={memories:'长期记忆',candidates:'增量候选与差异',runs:'后台执行记录',history:'原始聊天证据',retrieval_audit:'检索审计'};
+const titles={memories:'长期记忆',candidates:'增量候选与差异',runs:'后台执行记录',topics:'话题累计摘要',observations:'成员与群观察',replay_jobs:'历史重分析任务',history:'原始聊天证据',retrieval_audit:'检索审计'};
 $('list-title').textContent=titles[state.view];renderList();await detail();}
 function title(row){if(state.view==='memories')return row.content;
 if(state.view==='candidates')return `${row.action}: ${row.new_content}`;
 if(state.view==='runs')return `${row.status} · ${row.changes_count} 处修改 · ${row.provider}`;
 if(state.view==='history')return row.text||`[${row.kind}] ${row.media_kind||''}`;
+if(state.view==='topics')return `${row.title} · ${row.state} · ${row.summary}`;
+if(state.view==='observations')return `${row.scope==='member'?row.subject_id:'群公共'} · ${row.signal_type} · ${row.content}`;
+if(state.view==='replay_jobs')return `${row.mode} · ${row.status} · ${row.messages_scanned} 条已分析 · ID ${row.next_raw_id}/${row.end_raw_id}`;
 return `${row.mode} · ${row.selected_ids} · ${row.raw_ids}`;}
 function key(row){return state.view==='memories'?row.id:state.view==='candidates'?row.id:state.view==='runs'?row.id:state.view==='history'?row.id:row.id;}
 function renderList(){const box=$('items');box.replaceChildren();if(!state.rows.length){box.append(el('p','暂无记录。','empty'));return;}
@@ -52,7 +55,14 @@ for(const v of ver.items||[])box.append(el('p',`r${v.revision} ${v.action} · ${
 }else if(state.view==='candidates'){
 box.append(el('h3',`${row.action} · ${row.status}`),el('p',`旧版：\n${row.old_content||'（新记录）'}`,'source'),el('p',`建议：\n${row.new_content}`,'content'),el('p',`原因：${row.reason}\n来源：${row.sources_json}\n旧版本要求：${row.expected_revision??'不适用'}\nID: ${row.id}`,'info'));
 if(row.status==='review'){const actions=el('div',undefined,'actions');actions.append(button('批准变更',async()=>{await api('candidate_approve',{id:row.id});await refresh();},'primary'),button('拒绝变更',async()=>{await api('candidate_reject',{id:row.id});await refresh();},'danger'));box.append(actions);}
-}else {box.append(el('h3',state.view==='history'?'原始事件':'运行记录'),el('p',JSON.stringify(row,null,2),'source'));}}
+}else {box.append(el('h3',state.view==='history'?'原始事件':'运行记录'),el('p',JSON.stringify(row,null,2),'source'));
+if(state.view==='replay_jobs'){
+const actions=el('div',undefined,'actions');
+if(row.status==='running'||row.status==='pending')actions.append(button('暂停任务',async()=>{await api('replay_pause',{job_id:row.id});await list();notify('已请求暂停历史重分析。');}));
+if(row.status==='paused'||row.status==='failed')actions.append(button('恢复任务',async()=>{await api('replay_resume',{job_id:row.id});await list();notify('已恢复历史重分析。');},'primary'));
+if(!['completed','cancelled'].includes(row.status))actions.append(button('取消任务',async()=>{if(await askConfirm('取消剩余历史重分析任务？已完成的正式批次不会撤销。')){await api('replay_cancel',{job_id:row.id});await list();notify('已取消剩余历史重分析。');}},'danger'));
+box.append(actions);
+}}}
 function showEditor(mode,row=null){$('editor-title').textContent=mode==='edit'?'修改自然语言记忆':'添加本群记忆';$('content').value=row?.content||'';$('new-fields').hidden=mode==='edit';$('editor').dataset.mode=mode;$('editor').showModal();}
 $('editor-form').onsubmit=(event)=>{event.preventDefault();busy(async()=>{if($('editor').dataset.mode==='edit'){const row=state.rows.find(r=>r.id===state.selected);await api('edit',{id:row.id,revision:row.revision,content:$('content').value.trim()});}
 else await api('add',{content:$('content').value.trim(),kind:$('kind').value,subject:$('subject').value.trim(),topic:$('topic').value.trim()});$('editor').close();await refresh();});};
@@ -64,6 +74,17 @@ for(const id of ['query','filter-status','filter-kind'])$(id).onchange=()=>busy(
 $('add').onclick=()=>showEditor('add');
 $('dream').onclick=()=>busy(async()=>{await api('run_now');notify('已安排巩固，稍后在“后台执行记录”中查看结果。');});
 $('dry-run').onclick=()=>busy(async()=>{await api('dry_run');notify('已安排预览，结果不会写入记忆，也不会推进游标，但会产生模型费用。');});
+$('replay-start').onclick=()=>busy(async()=>{
+const from_id=Number($('replay-from').value),to_id=Number($('replay-to').value),mode=$('replay-mode').value;
+if(!Number.isInteger(from_id)||from_id<1||!Number.isInteger(to_id)||to_id<0){notify('历史范围必须是有效整数',true);return;}
+const info=await api('replay_prepare',{from_id,to_id});
+const text='将分析当前群 '+info.rows+' 条原始记录，ID '+info.from_id+'–'+info.to_id+'。模式：'+(mode==='preview'?'仅预览':'正式写入')+'。模型调用会消耗配额；是否继续？';
+if(!await askConfirm(text))return;
+const result=await api('replay_start',{from_id,to_id,mode,confirmed:true});
+state.view='replay_jobs';$('view').value='replay_jobs';await list();
+notify('历史任务已建立：'+result.job_id+'；可在“历史重分析任务”中查看进度。');
+});
+$('replay-refresh').onclick=()=>busy(async()=>{state.view='replay_jobs';$('view').value='replay_jobs';await list();notify('已刷新当前群历史任务。');});
 $('backfill').onclick=()=>busy(async()=>{if(!state.current){notify('请先选择群',true);return;}const scope={...state.current};notify(`正在从 Hook Inbox 读取 ${scope.room} 的记录…`);const r=await bridge.apiPost('manage',{operation:'backfill',...scope,limit:500});await refresh();const errors=(r.errors||[]).map(x=>`${x.room} #${x.sequence}: ${x.error}`);notify(`Hook 补录：新增 ${r.imported}，重复 ${r.duplicates}，跳过 ${r.skipped}；来源库 ${r.source_rows} 条，当前群匹配 ${r.matching_rows} 条。${r.note?' '+r.note:''}${errors.length?' 失败：'+errors.join('；'):''}`,errors.length>0);});
 $('media').onclick=()=>busy(async()=>{await api('media_run');notify('已安排媒体分析。只有启用媒体模型并设置允许路径后才会处理。');});
 $('pause').onclick=()=>busy(async()=>{await api($('pause').dataset.paused==='true'?'resume':'pause');await refresh();});
