@@ -42,7 +42,12 @@ Schema：
  "sensitivity":"normal|personal|restricted",
  "source_message_ids":["原始消息 id"]}]}
 第三方关于成员的说法必须 attribution=third_party_statement，通常 confidence=reported；
-member 画像必须有可指认的真实本人证据/第三方陈述/本人行为；不能凭没有证据的形容词臆测。
+关于成员的主张必须先判断“谁说的”和“说的是谁”，不能混淆。
+self_statement 只能用于 subject_type=member 且每条 source_message_ids 的 sender_id 都严格等于 subject_id；
+如果甲说乙的事情，要用 third_party_statement、subject_id=乙、speaker_id=甲、confidence=reported；
+多名成员发言时，不要把他们的证据合写成某一人的“本人自述”，应拆成不同主张或只引用本人原话。
+observed_behavior 必须有当事人的真实群内行为证据，不能把别人谈论该成员当作本人行为。
+member 画像必须有可指认的真实证据；不能凭没有证据的形容词臆测。
 """
 
 EVENT_TYPES={'gathering','project','discussion','other'}
@@ -135,6 +140,8 @@ def parse(text, messages, events, claims):
         anchor=e.get('anchor_date','')
         if not isinstance(anchor,str) or len(anchor)>32:raise ValueError('Invalid date')
         e['source_message_ids']=_ids(e.get('source_message_ids'),mids,nonempty=True)
+    accepted=[]
+    rejected=[]
     for c in cs:
         if not isinstance(c,dict):raise ValueError('Invalid claim')
         ident=c.get('existing_id','')
@@ -156,24 +163,57 @@ def parse(text, messages, events, claims):
             raise ValueError('Invalid content')
         evidence=_ids(c.get('source_message_ids'),mids,nonempty=True)
         speaker=c.get('speaker_id','')
-        if not isinstance(speaker,str) or (speaker and not any(mids[mid]['sender_id']==speaker for mid in evidence)):
-            raise ValueError('Claim speaker not grounded in evidence')
+        if not isinstance(speaker,str):
+            raise ValueError('Invalid claim speaker identity')
         if c['attribution']=='self_statement':
-            if c['subject_type']!='member' or any(mids[mid]['sender_id']!=sub for mid in evidence):
-                raise ValueError('Self statement requires same-author evidence')
+            own=[mid for mid in evidence if mids[mid]['sender_id']==sub]
+            foreign=[mid for mid in evidence if mids[mid]['sender_id']!=sub]
+            if c['subject_type']!='member' or not own:
+                # Do not turn an unsupported self-report into a fact about another user.
+                # Quarantine only its sources; all other valid claims may still commit.
+                rejected.append({
+                    'reason':'self_statement_author_mismatch',
+                    'subject_id':sub,'claim_type':c['claim_type'],
+                    'content':c['content'],
+                    'source_message_ids':evidence,
+                })
+                continue
+            if foreign:
+                # Keep only true first-person evidence and downgrade the claim pending review.
+                # The unverified cross-author references remain visible in the deferred ledger.
+                rejected.append({
+                    'reason':'cross_author_evidence_removed',
+                    'subject_id':sub,'claim_type':c['claim_type'],
+                    'content':c['content'],
+                    'source_message_ids':foreign,
+                })
+                evidence=own
+                c['confidence']='uncertain'
+            c['speaker_id']=sub
+        elif speaker and not any(mids[mid]['sender_id']==speaker for mid in evidence):
+            raise ValueError('Claim speaker not grounded in evidence')
         if c['attribution']=='third_party_statement':
             if not speaker or (c['subject_type']=='member' and speaker==sub):
                 raise ValueError('Third-party attribution has no third-party speaker')
             if c['confidence']=='confirmed':c['confidence']='reported'
         if c['attribution']=='observed_behavior' and c['subject_type']=='member':
             if not any(mids[mid]['sender_id']==sub for mid in evidence):
-                raise ValueError('Behavior claim needs member-authored evidence')
+                rejected.append({
+                    'reason':'behavior_author_mismatch',
+                    'subject_id':sub,'claim_type':c['claim_type'],
+                    'content':c['content'],
+                    'source_message_ids':evidence,
+                })
+                continue
         if ident:
             previous=existing_claims[ident]
             if (previous['subject_type'],previous['subject_id'],previous['claim_type']) != (c['subject_type'],sub,c['claim_type']):
                 raise ValueError('Cannot reassign existing claim identity')
         c['source_message_ids']=evidence
+        accepted.append(c)
     if len(es)==18 or len(cs)==40:raise ValueError('V3 proposal at limit; shrink batch to prevent dropped claims')
+    obj['claims']=accepted
+    obj['rejected_claims']=rejected
     return obj
 
 async def analyze(context, provider_id, scope, messages, events, claims, timeout=90):
