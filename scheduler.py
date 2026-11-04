@@ -86,7 +86,7 @@ class MemoryScheduler:
                 await self.run_scope(s,force=bool(count<max(1,int(self.config.get('min_messages_to_dream',10)))))
         await asyncio.gather(*(one(s) for s in self.store.due_scopes()),return_exceptions=False)
 
-    async def run_scope(self,s,*,dry_run=False,force=False):
+    async def run_scope(self,s,*,dry_run=False,force=False,replay_job_id=''):
         cfg=self.config
         if not cfg.get('enabled') or not cfg.get('extraction_provider_id'):
             return {'status':'disabled','reason':'No provider configured'}
@@ -95,11 +95,24 @@ class MemoryScheduler:
         holder=uuid.uuid4().hex
         if not self.store.acquire(s,holder,ttl=140):return {'status':'busy'}
         try:
-            cursor,batch,end=self.store.pending_batch(s,
-                max_messages=max(1,min(500,int(cfg.get('max_messages_per_run',250)))),
-                max_chars=max(500,min(120000,int(cfg.get('max_message_chars_per_run',20000)))))
+            max_messages=max(1,min(500,int(cfg.get('max_messages_per_run',250))))
+            max_chars=max(500,min(120000,int(cfg.get('max_message_chars_per_run',20000))))
+            if replay_job_id:
+                if not cfg.get('dreaming_v2_enabled',False):
+                    return {'status':'disabled','reason':'V2 not enabled'}
+                job=self.store.replay_job(s,replay_job_id)
+                if not job or job['status']!='running':
+                    return {'status':'denied','reason':'History job not running'}
+                cursor,batch,end=self.store.replay_batch(
+                    s,job['next_raw_id'],job['end_raw_id'],max_messages,max_chars)
+            else:
+                cursor,batch,end=self.store.pending_batch(
+                    s,max_messages=max_messages,max_chars=max_chars)
             if not batch:
-                if end>cursor and not dry_run:self.store.advance(s,cursor,end)
+                if replay_job_id and end>cursor:
+                    self.store.replay_advance_empty(s,replay_job_id,cursor,end)
+                elif end>cursor and not dry_run:
+                    self.store.advance(s,cursor,end)
                 return {'status':'empty','cursor':end}
             if not force and len(batch)<max(1,int(cfg.get('min_messages_to_dream',10))):
                 return {'status':'insufficient','messages':len(batch)}
@@ -147,7 +160,8 @@ class MemoryScheduler:
                 if not self.store.lease_held(s,holder):raise RuntimeError('Lost Dreaming lease')
                 report=apply(self.store,s,rid,cursor,end,changes,batch,existing,dry_run=dry_run,
                              max_changes=max(1,min(10,int(cfg.get('max_changes_per_run',8)))),
-                             v2=v2,existing_topics=topics,existing_observations=observations)
+                             v2=v2,existing_topics=topics,existing_observations=observations,
+                             replay_job_id=replay_job_id)
                 failed=False
                 self.store.finish_run(rid,'preview' if dry_run else 'committed',report['changed'],
                                       actual_in=in_tok if not is_estimated else None,
