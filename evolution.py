@@ -178,6 +178,13 @@ def _write_v2(store,s,topics,observations,messages,existing_topics):
         if not linked_topic:
             matched=[tid for tid,trefs in topic_sources.items() if trefs.intersection(refs)]
             if len(matched)==1:linked_topic=matched[0]
+        if scope=='group' and kind=='topic_participation' and linked_topic and not ident:
+            # Topic discussions belong in topic_states, not a second group observation.
+            for mid in refs:
+                store.db.execute(
+                    "INSERT OR IGNORE INTO topic_sources(topic_id,raw_id) VALUES(?,?)",
+                    (linked_topic,by_message[mid]['id']))
+            continue
         if ident:
             cur=store.db.execute(
                 """UPDATE observation_signals SET last_seen_at=?,updated_at=?,
