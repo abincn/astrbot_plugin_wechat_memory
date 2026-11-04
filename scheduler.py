@@ -84,9 +84,15 @@ class MemoryScheduler:
                     from .media import analyze_pending
                     await analyze_pending(self.store,s,self.config,limit=2)
                 await self.run_scope(s,force=bool(count<max(1,int(self.config.get('min_messages_to_dream',10)))))
+                if self.config.get('dreaming_v3_enabled',True):
+                    from .v3_profile import consolidate
+                    await consolidate(self,s)
         await asyncio.gather(*(one(s) for s in self.store.due_scopes()),return_exceptions=False)
 
     async def run_scope(self,s,*,dry_run=False,force=False,replay_job_id=''):
+        if self.config.get('dreaming_v3_enabled',True):
+            from .v3_pipeline import run
+            return await run(self,s,dry_run=dry_run,force=force,replay_job_id=replay_job_id)
         cfg=self.config
         if not cfg.get('enabled') or not cfg.get('extraction_provider_id'):
             return {'status':'disabled','reason':'No provider configured'}
