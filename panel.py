@@ -188,6 +188,14 @@ class MemoryPanel:
         if op=='sources':
             return {'sources':self.store.sources(s,str(payload.get('id',''))[:64])}
         if op=='history':return {'items':self.store.history(s)}
+        if op in ('v3_claim_edit','v3_claim_approve','v3_claim_retract','v3_claim_versions'):
+            from . import v3_store
+            ident=str(payload.get('id',''))[:64]
+            if op=='v3_claim_versions':return {'items':v3_store.claim_versions(self.store,s,ident)}
+            return v3_store.revise_claim(
+                self.store,s,ident,int(payload.get('revision',-1)),
+                op.removeprefix('v3_claim_'),actor,
+                str(payload.get('content','')) if op=='v3_claim_edit' else '')
         if op in ('v3_events','v3_claims','v3_profiles','v3_coverage','v3_sources'):
             from . import v3_store
             if op=='v3_events':return {'items':v3_store.events(self.store,s)}
