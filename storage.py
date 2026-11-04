@@ -172,6 +172,16 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 pass
             migrate(self.db)
+            current_version=int(self.db.execute('PRAGMA user_version').fetchone()[0])
+            if current_version < 5:
+                # Never overwrite an existing pre-V3 backup; sqlite backup is WAL-consistent.
+                backup_path=path.with_name(path.name+'.before-v3.sqlite3')
+                if not backup_path.exists():
+                    backup=sqlite3.connect(str(backup_path))
+                    try:
+                        self.db.backup(backup)
+                    finally:
+                        backup.close()
             migrate_v3(self.db)
 
     @contextlib.contextmanager
