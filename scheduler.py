@@ -47,7 +47,13 @@ class MemoryScheduler:
             r=self.store.db.execute('''SELECT last_success FROM room_state WHERE platform=? AND owner=? AND room=?''',
                                     self.store._key(s)).fetchone()
         last=int(r['last_success']) if r else 0
-        if last and dt.datetime.fromtimestamp(last,zone).date()==current.date():return False
+        if last and dt.datetime.fromtimestamp(last,zone).date()==current.date():
+            if not cfg.get('dreaming_v2_enabled',False):
+                return False
+            # V2 may process additional accumulated batches, bounded by daily budget.
+            count,_=self.store.backlog(s)
+            if count < max(1,int(cfg.get('min_messages_to_dream',10))):
+                return False
         return True
 
     async def _run(self):
