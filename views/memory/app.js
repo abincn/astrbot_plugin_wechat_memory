@@ -281,7 +281,19 @@ async function renderDetail(){
     if(info?.preview_json){
       let preview=info.preview_json;
       try{preview=JSON.parse(preview);}catch{}
-      box.append(el('h4','本次预览提取结果'),codeDetails('展开事件、主张和消息覆盖详情',preview));
+      const rejected=Array.isArray(preview?.rejected_claims)?preview.rejected_claims:[];
+      if(rejected.length){
+        const affected=new Set(rejected.flatMap(item=>item.source_message_ids||[]));
+        box.append(el('p','本轮有 '+rejected.length+' 条主张的身份或来源无法确认，涉及 '
+          +affected.size+' 条原始消息；这些消息已标记为待重分析，未当作本人事实保存。','inline-warning'));
+        box.append(el('h4','需要重新核对的来源'));
+        for(const item of rejected.slice(0,20)){
+          box.append(sourceCard(item.content||'未采纳的提取提案',
+            (item.reason||'归属待复核')+' · 消息 ID：'+(item.source_message_ids||[]).join(', ')));
+        }
+      }
+      box.append(el('h4',row.v3_detail?.mode?.includes('preview')?'本次预览提取结果':'本次提取明细'),
+        codeDetails('展开提取协议和来源明细',preview));
     }
     box.append(codeDetails('查看原始运行数据',row));return;
   }
