@@ -55,7 +55,20 @@ for(const v of ver.items||[])box.append(el('p',`r${v.revision} ${v.action} · ${
 }else if(state.view==='candidates'){
 box.append(el('h3',`${row.action} · ${row.status}`),el('p',`旧版：\n${row.old_content||'（新记录）'}`,'source'),el('p',`建议：\n${row.new_content}`,'content'),el('p',`原因：${row.reason}\n来源：${row.sources_json}\n旧版本要求：${row.expected_revision??'不适用'}\nID: ${row.id}`,'info'));
 if(row.status==='review'){const actions=el('div',undefined,'actions');actions.append(button('批准变更',async()=>{await api('candidate_approve',{id:row.id});await refresh();},'primary'),button('拒绝变更',async()=>{await api('candidate_reject',{id:row.id});await refresh();},'danger'));box.append(actions);}
-}else {box.append(el('h3',state.view==='history'?'原始事件':'运行记录'),el('p',JSON.stringify(row,null,2),'source'));
+}else {box.append(el('h3',state.view==='history'?'原始事件':state.view==='topics'?'话题':state.view==='observations'?'观察信号':'运行记录'),el('p',JSON.stringify(row,null,2),'source'));
+if(state.view==='topics'||state.view==='observations'){
+const op=state.view==='topics'?'topic_sources':'observation_sources';
+const details=await api(op,{id:row.id});
+box.append(el('h3','来源消息'));
+if(!(details.items||[]).length)box.append(el('p','没有可用的原始来源。','muted'));
+for(const msg of details.items||[])box.append(el('p',`${msg.sender_id} · ${date(msg.message_at)} · ${msg.message_id}\n${msg.text}`,'source'));
+}
+if(state.view==='runs'&&row.status==='preview'&&row.v2_detail){
+const result=await api('run_preview',{id:row.id});
+box.append(el('h3','预览候选：话题 / 观察 / 长期记忆'));
+if(result.preview)box.append(el('p',JSON.stringify(result.preview,null,2),'source'));
+else box.append(el('p','没有保存的 V2 预览内容。','muted'));
+}
 if(state.view==='replay_jobs'){
 const actions=el('div',undefined,'actions');
 if(row.status==='running'||row.status==='pending')actions.append(button('暂停任务',async()=>{await api('replay_pause',{job_id:row.id});await list();notify('已请求暂停历史重分析。');}));
