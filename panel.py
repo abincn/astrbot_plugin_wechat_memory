@@ -199,7 +199,7 @@ class MemoryPanel:
         if op in ('v3_events','v3_claims','v3_profiles','v3_coverage','v3_sources','v3_event_sources'):
             from . import v3_store
             if op=='v3_events':return {'items':v3_store.events(self.store,s)}
-            if op=='v3_claims':return {'items':v3_store.claims(self.store,s)}
+            if op=='v3_claims':return {'items':v3_store.claims(self.store,s,event_id=str(payload.get('event_id',''))[:64],subject=str(payload.get('subject_id',''))[:256])}
             if op=='v3_profiles':return {'items':v3_store.profiles(self.store,s)}
             if op=='v3_coverage':return {'items':v3_store.coverage(self.store,s)}
             if op=='v3_event_sources':return {'items':v3_store.event_sources(self.store,s,str(payload.get('id',''))[:64])}
