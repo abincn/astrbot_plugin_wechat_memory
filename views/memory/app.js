@@ -282,6 +282,17 @@ async function renderDetail(){
       let preview=info.preview_json;
       try{preview=JSON.parse(preview);}catch{}
       const rejected=Array.isArray(preview?.rejected_claims)?preview.rejected_claims:[];
+      const corrected=Array.isArray(preview?.corrected_claims)?preview.corrected_claims:[];
+      if(corrected.length){
+        box.append(el('p','本轮有 '+corrected.length+
+          ' 条被错误标为本人自述的主张，已根据唯一真实发送者改记为未经本人确认的第三方说法。','inline-warning'));
+        box.append(el('h4','安全调整的第三方说法'));
+        for(const item of corrected.slice(0,20)){
+          box.append(sourceCard(item.content||'待核实第三方说法',
+            '说话者：'+item.speaker_id+' · 被描述者：'+item.subject_id
+            +' · 消息 ID：'+(item.source_message_ids||[]).join(', ')));
+        }
+      }
       if(rejected.length){
         const affected=new Set(rejected.flatMap(item=>item.source_message_ids||[]));
         const previewOnly=String(row.v3_detail?.mode||'').includes('preview');
