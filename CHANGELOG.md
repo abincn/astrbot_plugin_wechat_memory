@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0-beta.4 (2026-11-04)
+
+- Resolve `Self statement requires same-author evidence` from model-proposed cross-member citations without discarding other valid claims.
+- Accept first-person claims only from exact same-sender raw sources; reduce certainty for mixed-source results.
+- Preserve single-author mislabelled self-report as explicitly source-attributed, unconfirmed third-party candidate; never present it as a direct self-report.
+- Quarantine unsupported member attribution, behavior and speaker IDs; persist affected raw-message IDs as deferred for later historical reanalysis.
+- Surface rejected-claim details in run UI and keep unresolved profile consolidation pending.
+- No tests written per project request; live provider validation pending.
+
 ## 0.4.0-beta.3 (2026-11-04)
 
 - Replace unreliable model-side reviewed_count arithmetic with a server-bound batch coverage key.

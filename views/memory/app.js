@@ -281,7 +281,35 @@ async function renderDetail(){
     if(info?.preview_json){
       let preview=info.preview_json;
       try{preview=JSON.parse(preview);}catch{}
-      box.append(el('h4','本次预览提取结果'),codeDetails('展开事件、主张和消息覆盖详情',preview));
+      const rejected=Array.isArray(preview?.rejected_claims)?preview.rejected_claims:[];
+      const corrected=Array.isArray(preview?.corrected_claims)?preview.corrected_claims:[];
+      if(corrected.length){
+        const correctedPreview=String(row.v3_detail?.mode||'').includes('preview');
+        box.append(el('p','本轮有 '+corrected.length+
+          ' 条被错误标为本人自述的主张，已按真实发送者归为未经确认的第三方说法'
+          +(correctedPreview?'（预览尚未写入）。':'（已按候选记录入库）。'),'inline-warning'));
+        box.append(el('h4','安全调整的第三方说法'));
+        for(const item of corrected.slice(0,20)){
+          box.append(sourceCard(item.content||'待核实第三方说法',
+            '说话者：'+item.speaker_id+' · 被描述者：'+item.subject_id
+            +' · 消息 ID：'+(item.source_message_ids||[]).join(', ')));
+        }
+      }
+      if(rejected.length){
+        const affected=new Set(rejected.flatMap(item=>item.source_message_ids||[]));
+        const previewOnly=String(row.v3_detail?.mode||'').includes('preview');
+        box.append(el('p','本轮有 '+rejected.length+' 条主张的身份或来源无法确认，涉及 '
+          +affected.size+' 条原始消息；'
+          +(previewOnly?'当前仅预览，不修改消息状态。':'已在消息分析账本标记待重分析。')
+          +'这些主张没有被当作本人事实保存。','inline-warning'));
+        box.append(el('h4','需要重新核对的来源'));
+        for(const item of rejected.slice(0,20)){
+          box.append(sourceCard(item.content||'未采纳的提取提案',
+            (item.reason||'归属待复核')+' · 消息 ID：'+(item.source_message_ids||[]).join(', ')));
+        }
+      }
+      box.append(el('h4',row.v3_detail?.mode?.includes('preview')?'本次预览提取结果':'本次提取明细'),
+        codeDetails('展开提取协议和来源明细',preview));
     }
     box.append(codeDetails('查看原始运行数据',row));return;
   }

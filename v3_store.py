@@ -45,7 +45,9 @@ def _in_scope(db,s,table,ident):
 def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_job_id='',skipped=(),consolidation_member=''):
     """One atomic event/claim/evidence/ledger/cursor commit. Caller owns model budget."""
     raw={m['message_id']:m for m in messages}
-    ids=[m['id'] for m in messages]
+    rejected=list(proposal.get('rejected_claims',[]))
+    corrected=list(proposal.get('corrected_claims',[]))
+    committed_claim_keys=set()
     changed_events=changed_claims=added_sources=0
     with store.transaction():
         if consolidation_member:
@@ -117,7 +119,13 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                         """SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=?
                            AND sender_id=? LIMIT 1""",(*key(s),subject)).fetchone()
                     if not known:
-                        raise ValueError('Unknown member identity; keep nickname-only statements unassigned')
+                        rejected.append({
+                            'reason':'unknown_member_identity',
+                            'subject_id':subject,'claim_type':item['claim_type'],
+                            'content':item['content'],
+                            'source_message_ids':item['source_message_ids'],
+                        })
+                        continue
                     if store.is_opted_out(s,subject):
                         continue
                 evidence=[raw[mid] for mid in item['source_message_ids']]
@@ -203,20 +211,29 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                             status='pending',last_raw_id=MAX(last_raw_id,excluded.last_raw_id),
                             updated_at=excluded.updated_at""",
                         (*key(s),subject,max(m['id'] for m in evidence),now()))
+                committed_claim_keys.add((subject,item['claim_type'],item['content']))
                 changed_claims+=1
 
+            # Rejected attribution is not silently counted as 'no memory signal'.
+            # It stays traceable as a deferred source even when another valid claim
+            # references the same raw message.
             sourced={mid for e in proposal['events'] for mid in e['source_message_ids']}
             sourced.update(mid for c in proposal['claims'] for mid in c['source_message_ids'])
+            rejected_sources={mid for claim in rejected for mid in claim['source_message_ids']}
             for m in ([] if consolidation_member else messages):
-                result='analyzed_with_evidence' if m['message_id'] in sourced else 'analyzed_no_signal'
+                mid=m['message_id']
+                result=('deferred' if mid in rejected_sources
+                        else 'analyzed_with_evidence' if mid in sourced
+                        else 'analyzed_no_signal')
+                reason='claim_attribution_requires_reanalysis' if result=='deferred' else ''
                 store.db.execute(
                     """INSERT INTO analysis_ledger
                        (platform,owner,room,raw_id,pipeline_version,result,reason,run_id,updated_at)
-                       VALUES(?,?,?,?,3,?,'',?,?)
+                       VALUES(?,?,?,?,3,?,?,?,?)
                        ON CONFLICT(platform,owner,room,raw_id,pipeline_version) DO UPDATE SET
                          result=excluded.result,reason=excluded.reason,
                          run_id=excluded.run_id,updated_at=excluded.updated_at""",
-                    (*key(s),m['id'],result,run_id,now()))
+                    (*key(s),m['id'],result,reason,run_id,now()))
 
         if not dry_run:
             for m in skipped:
@@ -229,10 +246,11 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                          run_id=excluded.run_id,updated_at=excluded.updated_at""",
                     (*key(s),m['id'],m['reason'],m['detail'],run_id,now()))
         if consolidation_member:
+            # An unresolved member attribution is not a completed profile consolidation.
             store.db.execute(
-                """UPDATE consolidation_queue SET status='completed',updated_at=?
+                """UPDATE consolidation_queue SET status=?,updated_at=?
                    WHERE platform=? AND owner=? AND room=? AND subject_id=?""",
-                (now(),*key(s),consolidation_member))
+                ('pending' if rejected else 'completed',now(),*key(s),consolidation_member))
         elif replay_job_id:
             cur=store.db.execute(
                 """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
@@ -247,11 +265,20 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                    WHERE platform=? AND owner=? AND room=? AND dream_cursor=?""",
                 (end,now(),*key(s),cursor))
             if cur.rowcount!=1:raise RuntimeError('Production cursor changed during V3 commit')
+        if not dry_run:
+            corrected=[item for item in corrected
+                       if (item['subject_id'],item['claim_type'],item['content'])
+                       in committed_claim_keys]
+        sourced={mid for e in proposal['events'] for mid in e['source_message_ids']}
+        sourced.update(mid for c in proposal['claims'] for mid in c['source_message_ids'])
+        rejected_sources={mid for claim in rejected for mid in claim['source_message_ids']}
         summary={
             'events':changed_events,'claims':changed_claims,
             'sources':added_sources,'analyzed':len(messages),
-            'no_signal':len(messages)-len({mid for e in proposal['events'] for mid in e['source_message_ids']}
-                |{mid for c in proposal['claims'] for mid in c['source_message_ids']}),
+            'no_signal':len(messages)-len(sourced|rejected_sources),
+            'deferred':len(rejected_sources),
+            'rejected_claims':len(rejected),
+            'corrected_claims':len(corrected),
         }
         store.db.execute(
             """INSERT INTO v3_run_details
@@ -260,7 +287,9 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
             (run_id,summary['analyzed'],summary['no_signal'],changed_events,changed_claims,
              added_sources,'replay_preview' if dry_run and replay_job_id else
              'preview' if dry_run else 'profile_consolidation' if consolidation_member else 'replay_apply' if replay_job_id else 'live',
-             json.dumps(proposal,ensure_ascii=False)[:100000] if dry_run else ''))
+             json.dumps(proposal if dry_run else {'rejected_claims':rejected,
+                                                    'corrected_claims':corrected},
+                        ensure_ascii=False)[:100000] if dry_run or rejected or corrected else ''))
         store.db.execute(
             """UPDATE dream_runs SET status=?,changes_count=?,finished_at=? WHERE id=?""",
             ('preview' if dry_run else 'committed',changed_claims,now(),run_id))
