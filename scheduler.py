@@ -7,7 +7,8 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from astrbot.api import logger
-from .extraction import analyze, build_input, estimate_tokens, SYSTEM
+from .extraction import (analyze, analyze_v2, build_input, build_input_v2,
+                         estimate_tokens, SYSTEM, SYSTEM_V2)
 from .evolution import apply
 from .storage import now,day_key
 
@@ -99,10 +100,17 @@ class MemoryScheduler:
             users={m['sender_id'] for m in batch}
             existing=self.store.get_context_records(s,users,
                 limit_per_user=max(1,min(30,int(cfg.get('max_existing_per_member',12)))))
+            v2_enabled=bool(cfg.get('dreaming_v2_enabled',False))
+            topics,observations=self.store.v2_context(s,users) if v2_enabled else ([],[])
+            if v2_enabled:
+                soft=max(1,min(100,int(cfg.get('analysis_batch_soft_limit',60))))
+                if len(batch)>soft:
+                    batch=batch[:soft]
+                    end=batch[-1]['id']
             cap=max(1000,int(cfg.get('max_input_tokens_per_run',16000)))
             # Reduce at complete message boundaries; the unprocessed remainder remains in raw archive.
             while batch:
-                estimate=estimate_tokens(build_input(s,batch,existing)+SYSTEM)
+                estimate=estimate_tokens(build_input_v2(s,batch,existing,topics,observations)+SYSTEM_V2) if v2_enabled else estimate_tokens(build_input(s,batch,existing)+SYSTEM)
                 if estimate<=cap:break
                 batch.pop();end=batch[-1]['id'] if batch else cursor
             if not batch:
@@ -119,14 +127,21 @@ class MemoryScheduler:
             rid=self.store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
             counted_in=estimate;counted_out=0;is_estimated=True;failed=True
             try:
-                changes,est,in_tok,out_tok,is_estimated=await analyze(self.context,
-                    cfg['extraction_provider_id'],s,batch,existing)
+                if v2_enabled:
+                    v2,est,in_tok,out_tok,is_estimated=await analyze_v2(
+                        self.context,cfg['extraction_provider_id'],s,batch,existing,topics,observations)
+                    changes=v2['changes']
+                else:
+                    v2=None
+                    changes,est,in_tok,out_tok,is_estimated=await analyze(
+                        self.context,cfg['extraction_provider_id'],s,batch,existing)
                 counted_in=in_tok;counted_out=out_tok
                 if self._stop.is_set() or s.room not in self.allowed_rooms or not cfg.get('enabled') or self.store.options(s):
                     raise PermissionError('Room disabled during evolution')
                 if not self.store.lease_held(s,holder):raise RuntimeError('Lost Dreaming lease')
                 report=apply(self.store,s,rid,cursor,end,changes,batch,existing,dry_run=dry_run,
-                             max_changes=max(1,min(10,int(cfg.get('max_changes_per_run',8)))))
+                             max_changes=max(1,min(10,int(cfg.get('max_changes_per_run',8)))),
+                             v2=v2,existing_topics=topics,existing_observations=observations)
                 failed=False
                 self.store.finish_run(rid,'preview' if dry_run else 'committed',report['changed'],
                                       actual_in=in_tok if not is_estimated else None,
