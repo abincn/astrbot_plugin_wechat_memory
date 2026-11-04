@@ -124,9 +124,15 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         # Model context may grow; select a complete message prefix by estimated token budget.
         events,claims=v3_store.context(store,s,{m['sender_id'] for m in batch})
         cap=max(1000,int(cfg.get('max_input_tokens_per_run',16000)))
+        # Prefer shrinking optional historical context before dropping live evidence.
+        # Output coverage also needs room for every message_id in the provider response.
+        output_reserve=max(1500,int(cfg.get('estimated_output_tokens_per_run',1500)))
         while batch:
             estimate=estimate_tokens(v3_extract.SYSTEM+v3_extract.build_prompt(s,batch,events,claims))
-            if estimate<=cap:break
+            coverage_estimate=600+sum(12+len(r['message_id']) for r in batch)
+            if estimate<=cap and coverage_estimate<=output_reserve:break
+            if estimate>cap and len(claims)>10:claims.pop();continue
+            if estimate>cap and len(events)>4:events.pop();continue
             batch.pop()
             end=max([cursor]+[r['id'] for r in batch]+[r['id'] for r in skipped
                         if not batch or r['id']<batch[-1]['id']])
