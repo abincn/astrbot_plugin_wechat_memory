@@ -284,8 +284,10 @@ async function renderDetail(){
       const rejected=Array.isArray(preview?.rejected_claims)?preview.rejected_claims:[];
       const corrected=Array.isArray(preview?.corrected_claims)?preview.corrected_claims:[];
       if(corrected.length){
+        const correctedPreview=String(row.v3_detail?.mode||'').includes('preview');
         box.append(el('p','本轮有 '+corrected.length+
-          ' 条被错误标为本人自述的主张，已根据唯一真实发送者改记为未经本人确认的第三方说法。','inline-warning'));
+          ' 条被错误标为本人自述的主张，已按真实发送者归为未经确认的第三方说法'
+          +(correctedPreview?'（预览尚未写入）。':'（已按候选记录入库）。'),'inline-warning'));
         box.append(el('h4','安全调整的第三方说法'));
         for(const item of corrected.slice(0,20)){
           box.append(sourceCard(item.content||'待核实第三方说法',
