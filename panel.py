@@ -65,6 +65,8 @@ class MemoryPanel:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            from astrbot.api import logger
+            logger.exception('[wechat_memory] history worker failed: %s',type(exc).__name__)
             # A concurrent pause/cancel may already have changed the job state.
             job=self.store.replay_job(s,job_id)
             if job and job['status']=='running':
