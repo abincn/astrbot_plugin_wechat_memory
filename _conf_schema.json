@@ -145,6 +145,11 @@
     "description": "允许管理员从既有 Hook Inbox 只读补录历史",
     "default": false
   },
+  "reanalysis_enabled": {
+    "type": "bool",
+    "description": "允许管理员按群启动历史重新分析（需要先启用 Dreaming V2；默认关闭）",
+    "default": false
+  },
   "hook_inbox_db": {
     "type": "string",
     "description": "通常留空，自动从运行中的 Hook 连接器读取真实 Inbox 路径；仅特殊部署需要手动填写（容器内路径）",
