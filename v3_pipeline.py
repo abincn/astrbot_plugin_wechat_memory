@@ -146,7 +146,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
             return {'status':'oversize','reason':'First message plus existing context exceeds token budget'}
         # Keep skipped rows only inside the committed prefix, and do not skip later rows.
         last_message=batch[-1]['id']
-        end=max(last_message,*[r['id'] for r in skipped if r['id']<last_message])
+        end=last_message  # selected prefix already includes preceding non-text records
         skipped=[r for r in skipped if r['id']<=end]
         day=day_key()
         limit_calls=max(1,int(cfg.get('max_calls_per_group_day',2)))
