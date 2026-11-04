@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .identity import Scope
 from .schema_v3 import migrate
+from .v3_schema import migrate as migrate_v3
 from .policy import fingerprint, safe_content, topic_key
 
 
@@ -171,6 +172,7 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 pass
             migrate(self.db)
+            migrate_v3(self.db)
 
     @contextlib.contextmanager
     def transaction(self):
