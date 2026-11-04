@@ -301,6 +301,18 @@ def apply(store,s,run_id,from_cursor,to_cursor,changes,messages,existing,*,dry_r
             store.db.execute('''UPDATE room_state SET dream_cursor=?,last_success=?,next_attempt=0,last_error=''
                 WHERE platform=? AND owner=? AND room=? AND dream_cursor=?''',
                 (to_cursor,now(),*store._key(s),from_cursor))
+        if v2_parts is not None and dry_run:
+            # Preserve the exact source-backed candidate set for admin inspection.
+            # No topic, observation or active memory is modified by preview mode.
+            store.db.execute(
+                """INSERT INTO dream_run_previews(run_id,payload_json,created_at)
+                   VALUES(?,?,?)""",
+                (run_id,json.dumps({
+                    'topics':v2['topics'],
+                    'observations':v2['observations'],
+                    'changes':v2['changes'],
+                    'empty_reason':v2.get('empty_reason','')
+                },ensure_ascii=False),now()))
         if v2_parts is not None:
             store.db.execute(
                 """INSERT INTO dream_run_details(run_id,mode,analyzed_messages,topics_written,
