@@ -48,11 +48,15 @@ class MemoryScheduler:
                                     self.store._key(s)).fetchone()
         last=int(r['last_success']) if r else 0
         if last and dt.datetime.fromtimestamp(last,zone).date()==current.date():
-            if not cfg.get('dreaming_v2_enabled',False):
+            if not (cfg.get('dreaming_v3_enabled',True) or cfg.get('dreaming_v2_enabled',False)):
                 return False
             # V2 may process additional accumulated batches, bounded by daily budget.
             count,_=self.store.backlog(s)
             if count < max(1,int(cfg.get('min_messages_to_dream',10))):
+                if cfg.get('dreaming_v3_enabled',True):
+                    with self.store._lock:
+                        pending=self.store.db.execute("SELECT 1 FROM consolidation_queue WHERE platform=? AND owner=? AND room=? AND status='pending' LIMIT 1",self.store._key(s)).fetchone()
+                    return bool(pending)
                 return False
         return True
 
@@ -79,7 +83,11 @@ class MemoryScheduler:
                         urgent=self.store.db.execute('''SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=? AND urgent=1
                           AND id>(SELECT dream_cursor FROM room_state WHERE platform=? AND owner=? AND room=?) LIMIT 1''',
                           (*self.store._key(s),*self.store._key(s))).fetchone()
-                    if not urgent:return
+                    if not urgent:
+                        if self.config.get('dreaming_v3_enabled',True):
+                            from .v3_profile import consolidate
+                            await consolidate(self,s)
+                        return
                 if self.config.get('media_enabled'):
                     from .media import analyze_pending
                     await analyze_pending(self.store,s,self.config,limit=2)
