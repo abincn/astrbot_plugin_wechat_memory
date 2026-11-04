@@ -154,3 +154,8 @@ dialog label{display:block;margin:12px 0;font-size:12px;font-weight:650}dialog l
  .pill.running{background:#29476d;color:#c3ddff}
  .job-progress{background:#384458}.metric small{color:#879db3}
 }
+
+.maintenance{margin-top:15px;padding:15px 20px}
+.maintenance summary{font-weight:650;font-size:13px;cursor:pointer;list-style:revert}
+.maintenance p{margin:10px 0 12px}
+.maintenance .inline-actions{margin-top:10px}
