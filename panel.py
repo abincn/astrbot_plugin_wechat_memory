@@ -65,6 +65,8 @@ class MemoryPanel:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            from astrbot.api import logger
+            logger.exception('[wechat_memory] history worker failed: %s',type(exc).__name__)
             # A concurrent pause/cancel may already have changed the job state.
             job=self.store.replay_job(s,job_id)
             if job and job['status']=='running':
@@ -119,7 +121,7 @@ class MemoryPanel:
                 return json_response(result,headers={'Cache-Control':'no-store'})
             if op in ('replay_start','replay_resume','replay_pause','replay_cancel'):
                 if not (self.config.get('dreaming_v3_enabled',True) or self.config.get('dreaming_v2_enabled')) or not self.config.get('reanalysis_enabled'):
-                    raise ValueError('请先启用 dreaming_v2_enabled 和 reanalysis_enabled')
+                    raise ValueError('请先启用历史重分析功能')
                 s=self._scope(payload)
                 if op=='replay_start':
                     if payload.get('confirmed') is not True:
@@ -199,14 +201,14 @@ class MemoryPanel:
         if op in ('v3_events','v3_claims','v3_profiles','v3_coverage','v3_sources','v3_event_sources'):
             from . import v3_store
             if op=='v3_events':return {'items':v3_store.events(self.store,s)}
-            if op=='v3_claims':return {'items':v3_store.claims(self.store,s)}
+            if op=='v3_claims':return {'items':v3_store.claims(self.store,s,event_id=str(payload.get('event_id',''))[:64],subject=str(payload.get('subject_id',''))[:256])}
             if op=='v3_profiles':return {'items':v3_store.profiles(self.store,s)}
             if op=='v3_coverage':return {'items':v3_store.coverage(self.store,s)}
             if op=='v3_event_sources':return {'items':v3_store.event_sources(self.store,s,str(payload.get('id',''))[:64])}
             return {'items':v3_store.sources(self.store,s,str(payload.get('id',''))[:64])}
         if op=='replay_prepare':
-            if not self.config.get('dreaming_v2_enabled') or not self.config.get('reanalysis_enabled'):
-                raise ValueError('历史重分析未启用')
+            if not self.config.get('reanalysis_enabled'):
+                raise ValueError('请在插件配置中启用历史重分析')
             return self.store.replay_prepare(s,int(payload.get('from_id',1)),
                                                  int(payload.get('to_id',0)))
         if op=='replay_jobs':return {'items':self.store.replay_jobs(s)}
@@ -253,6 +255,15 @@ class MemoryPanel:
         if op=='export':
             rows=self.store.list_memories(s,limit=200)
             for row in rows:row['sources']=self.store.sources(s,row['id'])
-            return {'scope':dict(platform=s.platform,owner=s.owner,room=s.room),'items':rows,
-                    'note':'Current group only; no global private profile or cross-group content.'}
+            from . import v3_store
+            claims=v3_store.claims(self.store,s,limit=250)
+            events=v3_store.events(self.store,s,limit=200)
+            return {
+                'scope':dict(platform=s.platform,owner=s.owner,room=s.room),
+                'legacy_memories':rows,
+                'v3_events':events,
+                'v3_claims':claims,
+                'v3_coverage':v3_store.coverage(self.store,s),
+                'note':'Administrator-only current group export, including restricted personal context; no cross-group/global data.',
+            }
         raise ValueError('Unsupported action')

@@ -146,7 +146,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
             return {'status':'oversize','reason':'First message plus existing context exceeds token budget'}
         # Keep skipped rows only inside the committed prefix, and do not skip later rows.
         last_message=batch[-1]['id']
-        end=max(last_message,*[r['id'] for r in skipped if r['id']<last_message])
+        end=last_message  # selected prefix already includes preceding non-text records
         skipped=[r for r in skipped if r['id']<=end]
         day=day_key()
         limit_calls=max(1,int(cfg.get('max_calls_per_group_day',2)))
@@ -199,12 +199,15 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                             max_messages=MIN(max_messages,excluded.max_messages),
                             updated_at=excluded.updated_at""",
                         (*v3_store.key(s),max(1,len(batch)//2),now()))
-            store.finish_run(rid,'failed',error=type(exc).__name__)
+            explanation=type(exc).__name__
+            if isinstance(exc,(TypeError,ValueError)):
+                explanation+=': '+str(exc)[:140]
+            store.finish_run(rid,'failed',error=explanation)
             if not replay_job_id:
-                store.fail_scope(s,type(exc).__name__,
+                store.fail_scope(s,explanation,
                                  max(120,int(cfg.get('retry_delay_seconds',600))))
-            logger.warning('[wechat_memory] V3 failed room=%s type=%s',s.room,type(exc).__name__)
-            return {'status':'failed','run_id':rid,'reason':type(exc).__name__}
+            logger.exception('[wechat_memory] V3 run failed room=%s',s.room)
+            return {'status':'failed','run_id':rid,'reason':explanation}
         finally:
             store.budget_finish(s,estimate,inp,out,purpose='dream',
                                 estimated_usage=estimated,error=failed,day=day)
