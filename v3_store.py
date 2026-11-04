@@ -111,8 +111,15 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
 
             for item in proposal['claims']:
                 subject=item.get('subject_id','')
-                if item['subject_type']=='member' and store.is_opted_out(s,subject):
-                    continue
+                if item['subject_type']=='member':
+                    # A person mentioned by nickname is not automatically a stable WeChat ID.
+                    known=store.db.execute(
+                        """SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=?
+                           AND sender_id=? LIMIT 1""",(*key(s),subject)).fetchone()
+                    if not known:
+                        raise ValueError('Unknown member identity; keep nickname-only statements unassigned')
+                    if store.is_opted_out(s,subject):
+                        continue
                 evidence=[raw[mid] for mid in item['source_message_ids']]
                 if item['attribution']=='self_statement' and (
                     item['subject_type']!='member' or any(m['sender_id']!=subject for m in evidence)):
@@ -157,7 +164,10 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                     # Do not silently overwrite an edited or retracted record.
                     row=_in_scope(store.db,s,'memory_claims',ident)
                     if row['status'] in ('retracted','superseded'):continue
-                    if row['confidence']!=confidence:
+                    manually_reviewed=store.db.execute(
+                        """SELECT 1 FROM memory_claim_versions WHERE claim_id=? LIMIT 1""",
+                        (ident,)).fetchone()
+                    if row['confidence']!=confidence and not manually_reviewed:
                         store.db.execute(
                             """UPDATE memory_claims SET confidence=?,status=?,
                                last_supported=MAX(last_supported,?),updated_at=?,
