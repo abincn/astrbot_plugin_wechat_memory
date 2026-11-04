@@ -23,12 +23,14 @@ async function list(){let op=state.view==='memories'?'list':state.view;
 const args=op==='list'?{status:$('filter-status').value,kind:$('filter-kind').value,query:$('query').value.trim()}:{};
 const r=await api(op,args);state.rows=r.items||[];state.selected=null;
 $('memory-filters').hidden=state.view!=='memories';$('add').hidden=state.view!=='memories';
-const titles={memories:'长期记忆',candidates:'增量候选与差异',runs:'后台执行记录',history:'原始聊天证据',retrieval_audit:'检索审计'};
+const titles={memories:'长期记忆',candidates:'增量候选与差异',runs:'后台执行记录',topics:'话题累计摘要',observations:'成员与群观察',history:'原始聊天证据',retrieval_audit:'检索审计'};
 $('list-title').textContent=titles[state.view];renderList();await detail();}
 function title(row){if(state.view==='memories')return row.content;
 if(state.view==='candidates')return `${row.action}: ${row.new_content}`;
 if(state.view==='runs')return `${row.status} · ${row.changes_count} 处修改 · ${row.provider}`;
 if(state.view==='history')return row.text||`[${row.kind}] ${row.media_kind||''}`;
+if(state.view==='topics')return `${row.title} · ${row.state} · ${row.summary}`;
+if(state.view==='observations')return `${row.scope==='member'?row.subject_id:'群公共'} · ${row.signal_type} · ${row.content}`;
 return `${row.mode} · ${row.selected_ids} · ${row.raw_ids}`;}
 function key(row){return state.view==='memories'?row.id:state.view==='candidates'?row.id:state.view==='runs'?row.id:state.view==='history'?row.id:row.id;}
 function renderList(){const box=$('items');box.replaceChildren();if(!state.rows.length){box.append(el('p','暂无记录。','empty'));return;}
