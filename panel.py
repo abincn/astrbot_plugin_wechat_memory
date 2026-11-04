@@ -88,6 +88,13 @@ class MemoryPanel:
                     if not self.config.get('media_enabled'):raise ValueError('Media not enabled')
                     return json_response(self._background(analyze_pending(self.store,s,self.config,limit=3)))
                 return json_response(self._background(self.scheduler.run_scope(s,dry_run=op=='dry_run',force=True)))
+            if op=='v3_profile_consolidate':
+                if not self.config.get('dreaming_v3_enabled',True):
+                    raise ValueError('Dreaming V3 not enabled')
+                s=self._scope(payload)
+                from .v3_profile import consolidate
+                return json_response(self._background(consolidate(
+                    self.scheduler,s,str(payload.get('subject_id',''))[:256])))
             if op=='backfill':
                 if not self.config.get('enabled') or not self.config.get('backfill_enabled'):
                     raise ValueError('请先在插件配置中启用 backfill_enabled')
@@ -111,7 +118,7 @@ class MemoryPanel:
                 result['source']='hook-inbox'
                 return json_response(result,headers={'Cache-Control':'no-store'})
             if op in ('replay_start','replay_resume','replay_pause','replay_cancel'):
-                if not self.config.get('dreaming_v2_enabled') or not self.config.get('reanalysis_enabled'):
+                if not (self.config.get('dreaming_v3_enabled',True) or self.config.get('dreaming_v2_enabled')) or not self.config.get('reanalysis_enabled'):
                     raise ValueError('请先启用 dreaming_v2_enabled 和 reanalysis_enabled')
                 s=self._scope(payload)
                 if op=='replay_start':
@@ -171,6 +178,9 @@ class MemoryPanel:
                 usage=stats['today_usage']
                 stats['today_cost_usd_estimate']=round((usage['input_tokens']*pin+
                     usage['output_tokens']*pout)/1_000_000,6)
+            if self.config.get('dreaming_v3_enabled',True):
+                from .v3_store import stats as v3_stats
+                stats['v3']=v3_stats(self.store,s)
             return {'stats':stats,'paused':self.store.options(s),'quality':self.store.data_quality(s)}
         if op=='list':
             return {'items':self.store.list_memories(s,status=payload.get('status',''),kind=payload.get('kind',''),
@@ -178,6 +188,13 @@ class MemoryPanel:
         if op=='sources':
             return {'sources':self.store.sources(s,str(payload.get('id',''))[:64])}
         if op=='history':return {'items':self.store.history(s)}
+        if op in ('v3_events','v3_claims','v3_profiles','v3_coverage','v3_sources'):
+            from . import v3_store
+            if op=='v3_events':return {'items':v3_store.events(self.store,s)}
+            if op=='v3_claims':return {'items':v3_store.claims(self.store,s)}
+            if op=='v3_profiles':return {'items':v3_store.profiles(self.store,s)}
+            if op=='v3_coverage':return {'items':v3_store.coverage(self.store,s)}
+            return {'items':v3_store.sources(self.store,s,str(payload.get('id',''))[:64])}
         if op=='replay_prepare':
             if not self.config.get('dreaming_v2_enabled') or not self.config.get('reanalysis_enabled'):
                 raise ValueError('历史重分析未启用')
@@ -191,6 +208,10 @@ class MemoryPanel:
             for row in rows:
                 detail=self.store.v2_run_detail(s,row['id'])
                 if detail:row['v2_detail']=detail
+                with self.store._lock:
+                    v3=self.store.db.execute(
+                        "SELECT * FROM v3_run_details WHERE run_id=?",(row['id'],)).fetchone()
+                if v3:row['v3_detail']=dict(v3)
             return {'items':rows}
         if op=='candidates':return {'items':self.store.candidates(s,status=str(payload.get('status',''))[:20])}
         if op=='retrieval_audit':return {'items':self.store.retrieval_audit(s)}
