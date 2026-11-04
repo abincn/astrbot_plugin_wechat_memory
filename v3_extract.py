@@ -191,10 +191,27 @@ def parse(text, messages, events, claims):
                 c['confidence']='uncertain'
             c['speaker_id']=sub
         elif speaker and not any(mids[mid]['sender_id']==speaker for mid in evidence):
-            raise ValueError('Claim speaker not grounded in evidence')
+            rejected.append({
+                'reason':'speaker_not_in_evidence',
+                'subject_id':sub,'claim_type':c['claim_type'],
+                'content':c['content'],'source_message_ids':evidence,
+            })
+            continue
         if c['attribution']=='third_party_statement':
+            # A single real sender may be recovered from the cited records; never invent a
+            # speaker or quietly treat a third-party statement as a self-reported fact.
+            if not speaker:
+                authors={mids[mid]['sender_id'] for mid in evidence}
+                if len(authors)==1 and (c['subject_type']!='member' or sub not in authors):
+                    speaker=next(iter(authors))
+                    c['speaker_id']=speaker
             if not speaker or (c['subject_type']=='member' and speaker==sub):
-                raise ValueError('Third-party attribution has no third-party speaker')
+                rejected.append({
+                    'reason':'third_party_speaker_unverified',
+                    'subject_id':sub,'claim_type':c['claim_type'],
+                    'content':c['content'],'source_message_ids':evidence,
+                })
+                continue
             if c['confidence']=='confirmed':c['confidence']='reported'
         if c['attribution']=='observed_behavior' and c['subject_type']=='member':
             if not any(mids[mid]['sender_id']==sub for mid in evidence):
