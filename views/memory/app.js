@@ -433,6 +433,19 @@ $('action-backfill').addEventListener('click',()=>work(async()=>{
   await loadOverview();
   notice('Hook 补录：新增 '+fmtNum(r.imported)+' · 重复 '+fmtNum(r.duplicates)+' · 跳过 '+fmtNum(r.skipped));
 }));
+$('action-media').addEventListener('click',()=>work(async()=>{
+  await api('media_run');
+  notice('已请求处理待解析媒体，结果可在执行记录中查看。');
+}));
+$('action-export').addEventListener('click',()=>work(async()=>{
+  const data=await api('export');
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const link=el('a');link.href=url;
+  link.download='wechat-memory-'+state.scope.room.replace(/[^a-zA-Z0-9.@-]/g,'_')+'.json';
+  document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);
+  notice('已生成当前群的记忆导出文件，请妥善保管其中的个人背景信息。');
+}));
 $('action-pause').addEventListener('click',()=>work(async()=>{
   const paused=$('action-pause').dataset.paused==='true';
   await api(paused?'resume':'pause');await loadOverview();
