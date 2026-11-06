@@ -100,7 +100,8 @@ class Panel:
                 info = binding()
                 for room in app.config.get('allowed_rooms', []):
                     app.archive.ensure_room(Scope(platform, info['owner'], room))
-            return [r for r in app.archive.scopes() if r['room'] in app.config.get('allowed_rooms', []) and r['platform']==platform]
+            return [{key:r[key] for key in ('scope','platform','owner','room','name')}
+                    for r in app.archive.scopes() if r['room'] in app.config.get('allowed_rooms', []) and r['platform']==platform]
         if p.get('platform')!=platform or p.get('room') not in app.config.get('allowed_rooms', []) or not p.get('owner'):
             raise Failure('scope_denied','当前账号或群未获授权')
         scope = Scope(platform, p['owner'], p['room'])

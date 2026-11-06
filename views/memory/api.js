@@ -2,7 +2,8 @@ export const state = {scope:null, view:'overview', cursor:'', names:{}};
 export const $ = id => document.getElementById(id);
 
 export async function api(operation, parameters={}) {
-  const response = await window.AstrBotPluginView.apiPost('manage', {...state.scope, operation, ...parameters});
+  const {platform, owner, room} = state.scope ?? {};
+  const response = await window.AstrBotPluginView.apiPost('manage', {platform, owner, room, operation, ...parameters});
   const result = response.data ?? response;
   if (result.error) throw new Error(`${result.error.message} [${result.error.code}]`);
   return result.data ?? result;
