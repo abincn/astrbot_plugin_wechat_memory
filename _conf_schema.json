@@ -89,6 +89,16 @@
         "type": "int",
         "description": "每轮为覆盖汇报和事件/画像提案预留的估算输出 Token（V3 推荐4500，可按模型调整）",
         "default": 4500
+      },
+      "low_activity_max_wait_days": {
+        "type": "int",
+        "description": "低活跃群最长积累天数",
+        "default": 7
+      },
+      "deferred_auto_retry": {
+        "type": "bool",
+        "description": "自动重评可分析的延期消息（每条最多两次，仍消耗额度）",
+        "default": false
       }
     }
   },

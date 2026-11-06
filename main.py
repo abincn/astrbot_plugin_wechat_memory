@@ -55,6 +55,7 @@ class Main(Star):
         media_path=metadata.get('media_path','') if not content else ''
         media_kind=metadata.get('media_kind','') if not content else ''
         reply_to=metadata.get('reply_to_id','')
+        identity_info={'mentions':[str(getattr(c,'qq','')) for c in getattr(message,'message',[]) if type(c).__name__=='At'][:50]}
         kind='text' if content else 'media'
         if not content and not media_path and not media_kind:
             # Do not fabricate media text from a missing attachment.
@@ -62,7 +63,15 @@ class Main(Star):
         urgent=bool(content and any(w in content for w in ('请记住','记住这个','以后按这个来','把这个记下来')))
         try:
             inserted=self.store.enqueue(scope,mid,sender,content,timestamp,urgent,
-                kind=kind,reply_to_id=reply_to,media_path=media_path,media_kind=media_kind)
+                kind=kind,reply_to_id=reply_to,media_path=media_path,media_kind=media_kind,identity_metadata=identity_info)
+            if inserted:
+                from .people import observe
+                observe(self.store,scope,sender,getattr(getattr(message,'sender',None),'nickname',''),source_message_id=mid)
+                card=getattr(getattr(message,'sender',None),'card','')
+                if isinstance(card,str):observe(self.store,scope,sender,card,'card',source_message_id=mid)
+                import re
+                alias=re.fullmatch(r'大家(?:以后)?叫我(.{2,20}?)(?:就行|就好)[。！! ]*',content)
+                if alias:observe(self.store,scope,sender,alias.group(1),'self','self_statement',source_message_id=mid)
             if inserted and urgent:self.scheduler.wake()
         except Exception as exc:
             logger.warning('[wechat_memory] archive failure: %s',type(exc).__name__)

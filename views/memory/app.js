@@ -2,6 +2,8 @@ const bridge=window.AstrBotPluginView;
 const $=id=>document.getElementById(id);
 const state={scopes:[],scope:null,view:'overview',rows:[],selected:'',jobSelected:'',jobs:[],busy:false,stats:null,edit:null};
 const TITLES={
+  deferred_list:['延期重评','缺少原文的记录需先补录；长文本可分片重评，生产游标不回退。'],
+  model_calls:['模型费用明细','逐次预留与结算；待核对表示中断后无法确认实际用量。'],
   v3_profiles:['成员画像','长期互动形成的行为、事实与背景，保留证据和可信度。'],
   v3_events:['群事件','聚餐、项目与持续讨论；具体事实和任务关联同一事件。'],
   v3_claims:['事实与观察','可核实的成员背景、群决定、行为模式及第三方说法。'],
@@ -15,7 +17,10 @@ const TITLES={
   retrieval_audit:['检索审计','已记录的群内上下文调用。']
 };
 const LABELS={
-  active:'有效',candidate:'候选',review:'待审核',reported:'第三方说法',
+  person_fact:'个人背景',preference:'偏好',behavior_pattern:'行为观察',event_detail:'事件细节',
+  long_term:'长期画像',recent:'近期事项',event:'事件信息',uncertain:'待判断',unclassified:'待分类',
+  settled:'已结算',needs_reconciliation:'用量待核对',reserved:'已预留',
+  active:'启用',candidate:'候选',review:'待审核',reported:'第三方说法',
   pending:'待执行',running:'进行中',completed:'已完成',failed:'失败',
   paused:'已暂停',cancelled:'已取消',committed:'已提交',preview:'预览',
   observing:'观察中',superseded:'已替代',retracted:'已撤销',deleted:'已删除',
@@ -119,6 +124,8 @@ function applySummary(stats){
   $('running-status').textContent=stats.paused?'暂停':stats.last_error?'上次运行有错误':'正常';
   $('cursor').textContent=fmtNum(stats.cursor);
   $('calls').textContent=fmtNum(stats.today_usage?.calls);
+  $('calls').title='额度重置：'+(stats.budget?.next_reset_local||'—');
+  $('budget-reset').textContent=stats.budget?.next_reset_local||'—';
   $('tokens').textContent=fmtNum((stats.today_usage?.input_tokens||0)+(stats.today_usage?.output_tokens||0));
   $('last-success').textContent=fmtDate(stats.last_success);
   $('last-error').hidden=!stats.last_error;
@@ -147,7 +154,10 @@ async function loadOverview(){
 }
 function recordTitle(row,view=state.view){
   switch(view){
-    case 'v3_profiles':case 'v3_claims':return row.content||'（无正文）';
+    case 'model_calls':return label(row.status)+' · '+row.purpose;
+    case 'deferred_list':return row.reason+' · '+(row.content||'缺少原文，需重新导入');
+    case 'v3_profiles':return row.display_name+' · '+row.content;
+    case 'v3_claims':return row.content||'（无正文）';
     case 'v3_events':return row.title||'未命名事件';
     case 'v3_coverage':return label(row.result);
     case 'runs':return runTitle(row)+(row.v3_detail?' · '+fmtNum(row.v3_detail.analyzed)+' 条消息':' · '+fmtNum(row.changes_count)+' 处变更');
@@ -161,7 +171,8 @@ function recordTitle(row,view=state.view){
   }
 }
 function recordCaption(row,view=state.view){
-  if(view==='v3_profiles'||view==='v3_claims')return (row.subject_id||'群公共')+' · '+label(row.claim_type);
+  if(view==='v3_profiles')return row.subject_id+' · '+row.claims.length+' 条资料';
+  if(view==='v3_claims')return (row.subject_id||'群公共')+' · '+label(row.claim_type);
   if(view==='v3_events')return label(row.event_type)+(row.anchor_date?' · '+row.anchor_date:'');
   if(view==='v3_coverage')return '处理结果';
   if(view==='runs')return fmtDate(row.created_at)+' · '+(row.provider||'');
@@ -173,18 +184,21 @@ function recordStatus(row,view=state.view){
   if(view==='v3_coverage')return fmtNum(row.count)+' 条';
   return label(row.status||row.state||row.confidence||'');
 }
-async function loadRecords(){
+async function loadRecords(append=false,preserve=false){
   const view=state.view;
   const desc=TITLES[view]||[view,''];
   $('list-title').textContent=desc[0];$('list-subtitle').textContent=desc[1];
-  const r=await api(view==='memories'?'list':view);
-  state.rows=r.items||[];state.selected='';
+  if(!preserve&&!append){$('query').value='';$('filter-status').value='';$('filter-kind').value='';}
+  state.paged=['memories','v3_profiles','v3_claims','v3_events','history','runs','topics','observations','retrieval_audit','deferred_list','model_calls'].includes(view);
+  const r=await api(view==='memories'?'list':view,{paged:state.paged,limit:50,cursor:append?state.nextCursor:'',query:$('query').value,status:$('filter-status').value,kind:$('filter-kind').value});
+  state.nextCursor=r.next_cursor;state.hasMore=r.has_more;
+  $('load-more').hidden=!r.has_more;
+  state.rows=append?[...state.rows,...(r.items||[])]:r.items||[];state.selected='';
   $('add').hidden=view!=='memories';
   const statuses=[...new Set(state.rows.map(x=>x.status||x.state||'').filter(Boolean))];
   const kinds=[...new Set(state.rows.map(x=>x.claim_type||x.kind||x.signal_type||x.event_type||'').filter(Boolean))];
-  fillOptions($('filter-status'),statuses,'全部状态');
-  fillOptions($('filter-kind'),kinds,'全部分类');
-  $('query').value='';renderRecords();
+  if(!preserve&&!append){fillOptions($('filter-status'),statuses,'全部状态');fillOptions($('filter-kind'),kinds,'全部分类');}
+  renderRecords();
   $('detail').replaceChildren(el('p','选择左侧记录，查看证据和详细状态。','empty'));
 }
 function fillOptions(select,items,allLabel){
@@ -194,6 +208,7 @@ function fillOptions(select,items,allLabel){
   select.hidden=items.length===0;
 }
 function filteredRecords(){
+  if(state.paged)return state.rows;
   const q=$('query').value.trim().toLowerCase();
   const status=$('filter-status').value,kind=$('filter-kind').value;
   return state.rows.filter(row=>{
@@ -214,7 +229,7 @@ function renderRecords(){
     const head=el('div',undefined,'record-top');
     head.append(el('small',recordCaption(row)),el('span',recordStatus(row),'pill '+(row.status||row.state||'')));
     b.append(head,el('div',recordTitle(row),'record-body'),
-      el('div',fmtDate(row.updated_at||row.created_at||row.message_at),'record-foot'));
+      el('div',(row.last_supported?'最后支持：':'记录更新：')+fmtDate(row.last_supported||row.updated_at||row.created_at||row.message_at),'record-foot'));
     b.addEventListener('click',()=>work(async()=>{state.selected=id;renderRecords();await renderDetail();}));
     box.append(b);
   }
@@ -224,7 +239,66 @@ async function renderDetail(){
   const row=state.rows.find(x=>recordId(x)===state.selected);
   if(!row){box.append(el('p','请选择一条记录。','empty'));return;}
   const view=state.view;
-  if(view==='v3_profiles'||view==='v3_claims'){
+  if(view==='deferred_list'){
+    box.append(el('h3',row.reason),sourceCard(row.content||'缺少可分析原文'),metaRows([['原话时间',fmtDate(row.message_at)],['自动尝试',row.auto_attempts]]));
+    for(const mode of ['preview','apply'])box.append(button(mode==='preview'?'预览重评':'正式重评',async()=>{
+      if(!await confirmAction('本操作会调用模型并计入额度；'+(mode==='preview'?'仅预览。':'正式写入主张和证据。')))return;
+      await api('deferred_replay',{raw_id:row.id,mode});notice('已创建重评任务，请到历史分析查看进度。');
+    }));return;
+  }
+  if(view==='model_calls'){
+    box.append(metaRows([['用途',row.purpose],['结算状态',row.status],['预留输入',row.reserved_input],['预留输出',row.reserved_output],['输入用量',row.actual_input],['输出用量',row.actual_output],['用量类型',row.estimated?'估算':'模型返回'],['UTC记账日',row.day],['请求时间',fmtDate(row.created_at)]]));return;
+  }
+  if(view==='v3_profiles'){
+    box.append(el('h3',row.display_name),el('p','账号：'+row.subject_id));
+    const name=el('input');name.placeholder='管理员确认的称呼';
+    box.append(name,button('添加称呼',async()=>{
+      await api('alias_add',{subject_id:row.subject_id,name:name.value});await loadRecords();
+    }));
+    for(const alias of row.aliases){
+      box.append(button('称呼来源：'+alias.name,async()=>{
+        const sources=await api('alias_sources',{id:alias.id});
+        box.append(el('p','记录来源：'+alias.source));
+        for(const source of sources.items||[])box.append(sourceCard(source.text,source.sender_id+' · '+fmtDate(source.message_at)));
+      }));
+      if(alias.status==='candidate')box.append(button('确认称呼：'+alias.name,async()=>{
+        await api('alias_status',{id:alias.id,revision:alias.revision,status:'confirmed'});await loadRecords();
+      }));
+      box.append(button('撤销称呼：'+alias.name,async()=>{
+      await api('alias_status',{id:alias.id,revision:alias.revision,status:'retracted'});await loadRecords();
+    }));}
+    box.append(button('预览画像分类',async()=>{
+      const preview=await api('profile_classify_preview');
+      const items=preview.items.filter(c=>row.claims.some(old=>old.id===c.id));
+      const area=el('div');
+      for(const c of items){
+        const select=el('select');
+        for(const value of ['long_term','recent','event','uncertain']){
+          const option=el('option',label(value));option.value=value;select.append(option);
+        }
+        select.value=c.purpose;select.addEventListener('change',()=>c.purpose=select.value);
+        area.append(el('p',c.content),select);
+      }
+      area.append(button('确认应用分类',async()=>{
+        await api('profile_classify_apply',{items});await loadRecords();
+      }));box.append(area);
+    }));
+    box.append(el('p','已确认称呼：'+row.aliases.filter(a=>a.status==='confirmed').map(a=>a.name).join('、')));
+    for(const purpose of ['long_term','recent','event','uncertain','unclassified']){
+      box.append(el('h4',label(purpose)));
+      for(const c of row.claims.filter(c=>c.purpose===purpose)){
+        box.append(sourceCard(c.content,label(c.status)+' · '+label(c.confidence)+' · 最后支持 '+fmtDate(c.last_supported)));
+        box.append(button('查看证据',async()=>{
+          const r=await api('v3_sources',{id:c.id});
+          const detail=el('div');
+          for(const e of r.items||[])detail.append(sourceCard(e.text,e.sender_id+' · 原话时间 '+fmtDate(e.message_at)));
+          box.append(detail);
+        }));
+      }
+    }
+    return;
+  }
+  if(view==='v3_claims'){
     box.append(el('div',row.content,'detail-title'),
       metaRows([['主体',row.subject_id||'当前群'],['类别',label(row.claim_type)],
         ['状态',label(row.status)],['可信度',label(row.confidence)],
@@ -248,7 +322,15 @@ async function renderDetail(){
     box.append(actions,el('h4','原始证据'));
     const r=await api('v3_sources',{id:row.id});
     if(!(r.items||[]).length)box.append(el('p','暂未找到对应原文来源。','muted'));
-    for(const e of r.items||[])box.append(sourceCard(e.text,e.sender_id+' · '+fmtDate(e.message_at)+' · '+label(e.relation)+' · '+e.message_id));
+    for(const e of r.items||[])box.append(sourceCard(e.text,e.sender_id+' · '+fmtDate(e.message_at)+' · '+label(e.relation)+' · '+e.message_id+(e.spans?.length?' · 原文片段 '+e.spans.map(s=>s.start_offset+'～'+s.end_offset).join('、'):'')));
+    const links=await api('claim_links',{id:row.id});
+    for(const link of links.items||[]){
+      box.append(sourceCard(link.target_content,'关联：'+link.relation+' · '+link.status));
+      if(link.status==='pending')for(const action of (link.relation==='possible_duplicate'?['keep_both','supersede_target','merge_into_target']:['keep_both','supersede_target']))box.append(button(action==='keep_both'?'保留双方说法':action==='merge_into_target'?'确认等价，合并证据到旧主张':'将关联旧主张标记已替代',async()=>{
+        if(!await confirmAction('确认处理这项冲突？此操作保留原文与历史版本。'))return;
+        await api('claim_link_resolve',{id:row.id,target_id:link.target_id,revision:row.revision,target_revision:link.target_revision,action});await loadRecords();
+      }));
+    }
     const versions=await api('v3_claim_versions',{id:row.id});
     if((versions.items||[]).length){
       box.append(el('h4','修订历史'));
@@ -274,7 +356,7 @@ async function renderDetail(){
     box.append(el('div',runTitle(row),'detail-title'),
       metaRows([['时间',fmtDate(row.created_at)],['运行结果',label(row.status)],
         ['消息范围',row.from_cursor+' → '+row.to_cursor],
-        ['已分析',info?.analyzed??info?.analyzed_messages??'—'],
+        ['流程已处理（非人工确认）',info?.analyzed??info?.analyzed_messages??'—'],
         ['新增主张',info?.claims_written??'—'],['新增事件',info?.events_written??'—'],
         ['来源关联',info?.sources_added??'—'],['模型',row.provider]]));
     if(row.error)box.append(el('p','失败原因：'+row.error,'inline-warning'));
@@ -356,7 +438,11 @@ async function renderDetail(){
   }
   if(view==='history'){
     box.append(el('div',row.text||'（无文本）','detail-title'),
-      metaRows([['作者',row.sender_id],['发送时间',fmtDate(row.message_at)],['类型',row.kind],['消息 ID',row.message_id]]));return;
+      metaRows([['作者',row.sender_id],['发送时间',fmtDate(row.message_at)],['类型',row.kind],['消息 ID',row.message_id],['原文召回',row.disclosure==='public'?'已确认可公开':'未审核，不自动注入']]));
+    box.append(button(row.disclosure==='public'?'撤销原文公开许可':'确认原文可在本群召回',async()=>{
+      if(!await confirmAction('请确认整条原文适合当前群受众；受限主张与高风险内容仍会被拦截。'))return;
+      await api('raw_disclosure',{id:row.id,disclosure:row.disclosure==='public'?'unreviewed':'public'});await loadRecords();
+    }));return;
   }
   if(view==='v3_coverage'){
     box.append(el('div',label(row.result),'detail-title'),
@@ -399,7 +485,7 @@ async function renderJobDetail(){
   box.append(el('div',(row.mode==='preview'?'预览任务':'正式重分析')+' · '+label(row.status),'detail-title'),
     metaRows([['任务状态',label(row.status)],['ID 范围',row.start_raw_id+'–'+row.end_raw_id],
       ['已扫描文本',fmtNum(row.messages_scanned)+' 条'],['完成批次',fmtNum(row.batches_done)],
-      ['下一消息 ID',fmtNum(row.next_raw_id)],['最近更新',fmtDate(row.updated_at)]]));
+      ['阻塞原因',row.blocked_reason],['下次可恢复',fmtDate(row.next_attempt)],['已尝试批次',row.attempts],['下一消息 ID',fmtNum(row.next_raw_id)],['最近更新',fmtDate(row.updated_at)]]));
   const bar=el('div',undefined,'job-progress');const fill=el('span');
   fill.style.width=progress.toFixed(1)+'%';bar.append(fill);
   box.append(el('h4','ID 范围进度 · '+progress.toFixed(1)+'%'),bar);
@@ -443,7 +529,15 @@ $('scope').addEventListener('change',()=>work(async()=>{
 }));
 $('refresh').addEventListener('click',()=>work(()=>navigate(state.view)));
 $('refresh-overview').addEventListener('click',()=>work(loadOverview));
-$('list-refresh').addEventListener('click',()=>work(loadRecords));
+$('list-refresh').addEventListener('click',()=>work(()=>loadRecords()));
+$('load-more').addEventListener('click',()=>work(()=>loadRecords(true,true)));
+let searchTimer;
+function scheduleSearch(delay=400){
+  clearTimeout(searchTimer);const view=state.view;
+  searchTimer=setTimeout(()=>{if(state.view!==view)return;if(state.busy){scheduleSearch(50);return;}work(()=>loadRecords(false,true));},delay);
+}
+$('query').addEventListener('input',()=>scheduleSearch());
+for(const id of ['filter-status','filter-kind'])$(id).addEventListener('change',()=>work(()=>loadRecords(false,true)));
 $('history-refresh').addEventListener('click',()=>work(loadJobs));
 $('more-runs').addEventListener('click',()=>work(()=>navigate('runs')));
 $('action-history').addEventListener('click',()=>work(()=>navigate('replay_jobs')));
@@ -466,11 +560,23 @@ $('action-media').addEventListener('click',()=>work(async()=>{
   notice('已请求处理待解析媒体，结果可在执行记录中查看。');
 }));
 $('action-export').addEventListener('click',()=>work(async()=>{
-  const data=await api('export');
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const session=await api('export_prepare');
+  const chunks=[JSON.stringify({format:'wechat-memory-jsonl',scope:state.scope,created_at:session.created_at,note:'管理导出，非数据库备份'})+'\n'];
+  const counts={};let position=[0,0];
+  try{
+    while(true){
+      const page=await api('export_next',{token:session.token,position});
+      for(const line of page.lines){const entry=JSON.parse(line);counts[entry.table]=(counts[entry.table]||0)+1;chunks.push(line+'\n');}
+      position=page.position;
+      notice('正在生成导出：'+Object.values(counts).reduce((a,b)=>a+b,0)+' 条记录');
+      if(page.done)break;
+    }
+    chunks.push(JSON.stringify({counts})+'\n');
+  }finally{await api('export_cancel',{token:session.token});}
+  const blob=new Blob(chunks,{type:'application/x-ndjson'});
   const url=URL.createObjectURL(blob);
   const link=el('a');link.href=url;
-  link.download='wechat-memory-'+state.scope.room.replace(/[^a-zA-Z0-9.@-]/g,'_')+'.json';
+  link.download='wechat-memory-'+state.scope.room.replace(/[^a-zA-Z0-9.@-]/g,'_')+'.jsonl';
   document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);
   notice('已生成当前群的记忆导出文件，请妥善保管其中的个人背景信息。');
 }));

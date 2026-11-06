@@ -39,28 +39,34 @@ async def consolidate(scheduler,s,member=''):
                    ORDER BY updated_at ASC LIMIT 1""",v3_store.key(s)).fetchone()
             member=row['subject_id'] if row else ''
     if not member:return {'status':'empty','reason':'No pending member'}
-    if store.is_opted_out(s,member):return {'status':'denied'}
+    if s.platform!=cfg.get('platform_id','wechat_pc_hook') or s.room not in scheduler.allowed_rooms or store.options(s) or store.is_opted_out(s,member):return {'status':'denied'}
     holder=uuid.uuid4().hex
     if not store.acquire(s,holder,ttl=150):return {'status':'busy'}
     try:
         cap=max(1000,int(cfg.get('max_input_tokens_per_run',16000)))
+        with store._lock:
+            progress=store.db.execute('SELECT cursor,offset FROM profile_progress WHERE platform=? AND owner=? AND room=? AND subject_id=?',(*v3_store.key(s),member)).fetchone()
+            cursor=int(progress['cursor']) if progress else 0
+            fragment_offset=int(progress['offset']) if progress else 0
         with store._lock:
             # Include the subject's actual messages AND genuine third-party attribution in the same group.
             rows=[dict(r) for r in store.db.execute(
                 """SELECT DISTINCT r.id,r.message_id,r.sender_id,r.message_at,r.text,r.reply_to_id
                    FROM raw_messages r
                    WHERE r.platform=? AND r.owner=? AND r.room=?
-                     AND r.text!=''
+                     AND r.text!='' AND r.id>?
                      AND (r.sender_id=? OR r.id IN (
                         SELECT e.raw_id FROM claim_evidence e JOIN memory_claims c ON c.id=e.claim_id
                         WHERE c.platform=? AND c.owner=? AND c.room=?
                           AND c.subject_type='member' AND c.subject_id=?))
-                   ORDER BY r.message_at DESC LIMIT 180""",
-                (*v3_store.key(s),member,*v3_store.key(s),member))]
+                   ORDER BY r.id ASC LIMIT 180""",
+                (*v3_store.key(s),cursor,member,*v3_store.key(s),member))]
         if not rows:
-            return {'status':'empty','reason':'No member evidence'}
+            with store.transaction():
+                store.db.execute("UPDATE consolidation_queue SET status='completed' WHERE platform=? AND owner=? AND room=? AND subject_id=?",(*v3_store.key(s),member))
+            return {'status':'empty','reason':'No pending member evidence'}
         # Do not silently lose the longer-term chronology: use bounded oldest+newest messages.
-        rows=sorted(rows,key=lambda r:(r['message_at'],r['id']))
+        rows=sorted(rows,key=lambda r:r['id'])
         relevant=v3_store.profiles(store,s,limit=100,member=member)
         existing=[{
             'id':r['id'],'event_id':r['event_id'],'subject_type':r['subject_type'],
@@ -69,12 +75,25 @@ async def consolidate(scheduler,s,member=''):
             'attribution':r['attribution'],'confidence':r['confidence'],
             'revision':r['revision']} for r in relevant]
         # Ensure every available message id in prompt is counted toward coverage.
+        for message in rows:message['_timezone']=cfg.get('dream_timezone','Asia/Shanghai')
         system=PROFILE_SYSTEM+'\n目标成员ID：'+member
+        if fragment_offset and rows:
+            rows=rows[:1]
+            rows[0]['_fragment_start']=fragment_offset
+            rows[0]['_fragment_total']=len(rows[0]['text'])
+            rows[0]['text']=rows[0]['text'][fragment_offset:]
+            rows[0]['_fragment_end']=fragment_offset+len(rows[0]['text'])
         prompt=v3_extract.build_prompt(s,rows,[],existing)
         while rows and estimate_tokens(system+prompt)>cap:
-            if len(rows)>2:
-                rows.pop(len(rows)//2)  # retain both older and newer history
-            else:rows.pop(0)
+            if existing:
+                existing.pop()
+            elif len(rows)==1 and len(rows[0]['text'])>100:
+                rows[0].setdefault('_fragment_start',0)
+                rows[0].setdefault('_fragment_total',len(rows[0]['text']))
+                rows[0]['text']=rows[0]['text'][:len(rows[0]['text'])//2]
+                rows[0]['_fragment_end']=rows[0]['_fragment_start']+len(rows[0]['text'])
+            else:
+                rows.pop()  # only commit a contiguous evidence prefix
             prompt=v3_extract.build_prompt(s,rows,[],existing)
         if not rows:return {'status':'oversize'}
         estimated_in=estimate_tokens(system+prompt)
@@ -89,14 +108,22 @@ async def consolidate(scheduler,s,member=''):
             output_price=float(cfg.get('output_price_usd_per_million',0) or 0)):
             from .v3_pipeline import _usage_reason
             return {'status':'budget_exceeded','reason':_usage_reason(store,s,estimated_in,cfg)}
-        rid=store.begin_run(s,0,0,str(cfg['extraction_provider_id']),estimated_in,False)
+        rid=''
         actual_in=estimated_in;actual_out=0;estimated=True;failed=True
         try:
+            rid=store.begin_run(s,0,0,str(cfg['extraction_provider_id']),estimated_in,False)
             async with asyncio.timeout(90):
                 response=await scheduler.context.llm_generate(
                     chat_provider_id=cfg['extraction_provider_id'],prompt=prompt,
                     system_prompt=system+'\n本批必须回传的 batch_key：'+v3_extract.batch_coverage_key(rows),
                     tools=ToolSet())
+            usage=getattr(response,'usage',None)
+            inp=getattr(usage,'prompt_tokens',None);out=getattr(usage,'completion_tokens',None)
+            estimated=not isinstance(inp,int) or not isinstance(out,int)
+            actual_in=inp if isinstance(inp,int) else estimated_in
+            actual_out=out if isinstance(out,int) else estimate_tokens(response.completion_text)
+            from .budget import observe
+            observe(store,actual_in,actual_out,estimated,scope=s)
             if getattr(response,'role','assistant')!='assistant' or getattr(response,'tools_call_name',None):
                 raise ValueError('Invalid profile response role')
             payload=v3_extract.parse(response.completion_text,rows,[],existing)
@@ -104,12 +131,9 @@ async def consolidate(scheduler,s,member=''):
                 raise ValueError('Consolidation must only produce member profile claims')
             if any(c['subject_type']!='member' or c['subject_id']!=member for c in payload['claims']):
                 raise ValueError('Consolidation output has another subject')
+            if scheduler._stop.is_set() or not cfg.get('enabled') or s.room not in scheduler.allowed_rooms or store.options(s) or store.is_opted_out(s,member):
+                raise PermissionError('Consolidation disabled before commit')
             if not store.lease_held(s,holder):raise RuntimeError('Consolidation lease lost')
-            usage=getattr(response,'usage',None)
-            inp=getattr(usage,'prompt_tokens',None);out=getattr(usage,'completion_tokens',None)
-            estimated=not isinstance(inp,int) or not isinstance(out,int)
-            actual_in=inp if isinstance(inp,int) else estimated_in
-            actual_out=out if isinstance(out,int) else estimate_tokens(response.completion_text)
             stats=v3_store.commit(store,s,rid,0,0,rows,payload,consolidation_member=member)
             store.finish_run(rid,'committed',stats['claims'],
                              actual_in=actual_in if not estimated else None,

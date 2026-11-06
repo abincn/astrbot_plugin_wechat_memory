@@ -81,7 +81,7 @@ DDL = (
 
 def migrate(db: sqlite3.Connection) -> None:
     version = int(db.execute('PRAGMA user_version').fetchone()[0])
-    if version > 5:
+    if version > 6:
         raise RuntimeError('Memory database is newer than Dreaming V3')
     db.execute('BEGIN IMMEDIATE')
     try:

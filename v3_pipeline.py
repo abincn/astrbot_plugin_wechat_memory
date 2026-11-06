@@ -11,7 +11,7 @@ from .storage import day_key,now
 from . import v3_extract,v3_store
 
 
-def select_batch(store,s,*,cursor,end_limit=None,max_messages=500,max_chars=45000):
+def select_batch(store,s,*,cursor,end_limit=None,max_messages=500,max_chars=45000,replay_job_id=''):
     """Return a contiguous source range, including explicit skipped/deferred rows."""
     with store._lock:
         if end_limit is None:
@@ -23,7 +23,7 @@ def select_batch(store,s,*,cursor,end_limit=None,max_messages=500,max_chars=4500
         else:
             where='id>? AND id<=?';bounds=[cursor,end_limit]
         rows=[dict(r) for r in store.db.execute(
-            """SELECT id,message_id,sender_id,text,kind,message_at,reply_to_id,source
+            """SELECT id,message_id,sender_id,text,kind,message_at,reply_to_id,source,identity_json
                FROM raw_messages WHERE platform=? AND owner=? AND room=? AND """
             +where+' ORDER BY id LIMIT ?',
             (*v3_store.key(s),*bounds,max(1,min(max_messages,500))))]
@@ -31,10 +31,21 @@ def select_batch(store,s,*,cursor,end_limit=None,max_messages=500,max_chars=4500
         for row in rows:
             size=len(row['text'])
             if row['kind'] not in ('text','media_text') or not row['text']:
-                skipped.append({'id':row['id'],'reason':'excluded_by_policy','detail':'not_analyzable_text'})
+                detail=('missing_raw_requires_reimport' if row['kind']=='oversized' else 'media_pending_or_missing' if row['kind']=='media' else 'not_analyzable_text')
+                skipped.append({'id':row['id'],'reason':'deferred' if row['kind'] in ('oversized','media') else 'excluded_by_policy','detail':detail})
                 last=row['id'];continue
-            if size>max_chars:
+            previous_fragment=store.db.execute('SELECT offset,chunk_chars FROM fragment_progress WHERE job_id=? AND raw_id=?',(replay_job_id,row['id'])).fetchone() if replay_job_id else None
+            if size>max_chars or previous_fragment:
                 if batch:break
+                if replay_job_id:
+                    progress=store.db.execute('SELECT offset FROM fragment_progress WHERE job_id=? AND raw_id=?',(replay_job_id,row['id'])).fetchone()
+                    offset=int(progress['offset']) if progress else 0
+                    row['_fragment_start']=offset
+                    row['_fragment_total']=size
+                    chunk_chars=min(max_chars,int(progress['chunk_chars'])) if progress else max_chars
+                    row['text']=row['text'][offset:offset+chunk_chars]
+                    row['_fragment_end']=offset+len(row['text'])
+                    batch.append(row);last=row['id'];break
                 skipped.append({'id':row['id'],'reason':'deferred','detail':'oversized_text_requires_separate_review'})
                 last=row['id'];continue
             if chars+size>max_chars:break
@@ -120,7 +131,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         max_chars=max(1000,min(120000,int(cfg.get('max_message_chars_per_run',45000))))
         cursor,batch,skipped,end=select_batch(
             store,s,cursor=cursor,end_limit=end_limit,
-            max_messages=max_messages,max_chars=max_chars)
+            max_messages=max_messages,max_chars=max_chars,replay_job_id=replay_job_id)
         if not batch:
             return _record_empty(store,s,cursor,end,skipped,
                                  dry_run=dry_run,replay_job_id=replay_job_id)
@@ -128,17 +139,37 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
             return {'status':'insufficient','messages':len(batch)}
 
         # Model context may grow; select a complete message prefix by estimated token budget.
-        events,claims=v3_store.context(store,s,{m['sender_id'] for m in batch})
+        events,claims=v3_store.context(store,s,{m['sender_id'] for m in batch},texts=[m['text'] for m in batch])
+        from .people import aliases
+        name_context=[{'subject_id':r['subject_id'],'name':r['name'],'kind':r['kind']} for r in aliases(store,s) if r['status']=='confirmed'][:100]
+        for message in batch:
+            message['_aliases']=name_context
+            message['_timezone']=cfg.get('dream_timezone','Asia/Shanghai')
+        refs=list(dict.fromkeys(m['reply_to_id'] for m in batch if m.get('reply_to_id')))[:12]
+        auxiliary=[];context_chars=0
+        for source in store.raw_by_ids(s,refs).values():
+            if source['message_id'] in {m['message_id'] for m in batch} or store.is_opted_out(s,source['sender_id']):continue
+            if not source['text'] or context_chars+len(source['text'])>6000:continue
+            source['reply_to_id']='';auxiliary.append(source);context_chars+=len(source['text'])
+        batch[0]['_auxiliary']=auxiliary
         cap=max(1000,int(cfg.get('max_input_tokens_per_run',16000)))
         # Prefer shrinking optional historical context before dropping live evidence.
         # Output coverage also needs room for every message_id in the provider response.
-        output_reserve=max(1500,int(cfg.get('estimated_output_tokens_per_run',4500)))
+        output_reserve=max(1500,int(cfg.get('estimated_output_tokens_per_run',1500)))
         while batch:
             estimate=estimate_tokens(v3_extract.SYSTEM+v3_extract.build_prompt(s,batch,events,claims))
             coverage_estimate=1200+len(batch)*4
             if estimate<=cap and coverage_estimate<=output_reserve:break
-            if estimate>cap and len(claims)>10:claims.pop();continue
-            if estimate>cap and len(events)>4:events.pop();continue
+            if estimate>cap and batch[0].get('_auxiliary'):
+                batch[0]['_auxiliary'].pop();continue
+            if estimate>cap and claims:claims.pop();continue
+            if estimate>cap and events:events.pop();continue
+            if len(batch)==1 and replay_job_id and len(batch[0]['text'])>100:
+                batch[0].setdefault('_fragment_start',0)
+                batch[0].setdefault('_fragment_total',len(batch[0]['text']))
+                batch[0]['text']=batch[0]['text'][:len(batch[0]['text'])//2]
+                batch[0]['_fragment_end']=batch[0]['_fragment_start']+len(batch[0]['text'])
+                continue
             batch.pop()
             end=max([cursor]+[r['id'] for r in batch]+[r['id'] for r in skipped
                         if not batch or r['id']<batch[-1]['id']])
@@ -151,7 +182,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         day=day_key()
         limit_calls=max(1,int(cfg.get('max_calls_per_group_day',2)))
         limit_tokens=max(1000,int(cfg.get('max_tokens_per_group_day',40000)))
-        expected_output=max(0,int(cfg.get('estimated_output_tokens_per_run',1500)))
+        expected_output=output_reserve
         if not store.budget_reserve(
             s,estimate,purpose='dream',limit_calls=limit_calls,limit_tokens=limit_tokens,
             day=day,max_usd=float(cfg.get('max_cost_per_group_day_usd',0) or 0),
@@ -160,18 +191,27 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
             expected_output=expected_output):
             return {'status':'budget_exceeded',
                     'reason':_usage_reason(store,s,estimate,cfg),'estimated_input':estimate}
-        rid=store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
+        rid=''
         inp=estimate;out=0;estimated=True;failed=True
         try:
+            rid=store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
+            from .budget import observe
             proposal,inp,out,estimated=await v3_extract.analyze(
-                scheduler.context,cfg['extraction_provider_id'],s,batch,events,claims)
-            if scheduler._stop.is_set() or not cfg.get('enabled') or store.options(s):
+                scheduler.context,cfg['extraction_provider_id'],s,batch,events,claims,
+                usage_observer=lambda i,o,e:observe(store,i,o,e,scope=s))
+            if scheduler._stop.is_set() or not cfg.get('enabled') or s.room not in scheduler.allowed_rooms or store.options(s):
                 raise RuntimeError('Group disabled during Dreaming')
             if not store.lease_held(s,holder):raise RuntimeError('Lost group Dreaming lease')
             stats=v3_store.commit(
                 store,s,rid,cursor,end,batch,proposal,
                 dry_run=dry_run,replay_job_id=replay_job_id,skipped=skipped)
             failed=False
+            if not dry_run and cfg.get('embedding_enabled'):
+                try:
+                    from .claim_vectors import index_missing
+                    await index_missing(store,s,cfg)
+                except Exception as vector_error:
+                    logger.warning('[wechat_memory] claim index failure: %s',type(vector_error).__name__)
             if hint:
                 with store.transaction():
                     store.db.execute(
@@ -190,7 +230,14 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         except Exception as exc:
             # Model-side incomplete/invalid output shrinks the next batch; source cursor
             # remains unchanged. Do not treat database/authorization errors as shrink cues.
-            retryable=isinstance(exc,v3_extract.CoverageError) and len(batch)>1
+            retryable=isinstance(exc,v3_extract.CoverageError) and (len(batch)>1 or bool(replay_job_id and len(batch)==1 and '_fragment_start' in batch[0] and len(batch[0]['text'])>100))
+            if retryable and len(batch)==1 and replay_job_id:
+                with store.transaction():
+                    store.db.execute('''INSERT INTO fragment_progress(job_id,raw_id,offset,chunk_chars) VALUES(?,?,?,?)
+                      ON CONFLICT(job_id,raw_id) DO UPDATE SET chunk_chars=excluded.chunk_chars''',
+                      (replay_job_id,batch[0]['id'],batch[0]['_fragment_start'],max(100,len(batch[0]['text'])//2)))
+            status_code=getattr(exc,'status_code',None)
+            transient=isinstance(exc,(TimeoutError,ConnectionError)) or status_code in (429,502,503,504)
             if retryable:
                 # Both preview and apply must retry smaller, without advancing either cursor.
                 with store.transaction():
@@ -209,7 +256,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                 store.fail_scope(s,explanation,
                                  max(120,int(cfg.get('retry_delay_seconds',600))))
             logger.exception('[wechat_memory] V3 run failed room=%s',s.room)
-            return {'status':'retryable' if retryable else 'failed',
+            return {'status':'retryable' if retryable else 'transient' if transient else 'failed',
                     'run_id':rid,'reason':explanation}
         finally:
             store.budget_finish(s,estimate,inp,out,purpose='dream',

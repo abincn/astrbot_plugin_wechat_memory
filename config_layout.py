@@ -9,6 +9,7 @@ from astrbot.api import logger
 GROUPS = {
     "analysis_settings": (
         "dream_timezone", "dream_hour", "min_messages_to_dream",
+        "low_activity_max_wait_days", "deferred_auto_retry",
         "max_messages_per_run", "max_input_tokens_per_run",
         "max_calls_per_group_day", "max_tokens_per_group_day",
         "estimated_output_tokens_per_run",

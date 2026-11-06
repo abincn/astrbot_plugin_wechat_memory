@@ -18,6 +18,8 @@ class MemoryScheduler:
         self.store=store;self.context=context;self.config=config;self.allowed_rooms=allowed_rooms
         self._task=None;self._stop=asyncio.Event();self._wake=asyncio.Event()
         self._running=set()
+        from .jobs import TaskCoordinator
+        self.jobs=TaskCoordinator(self)
 
     def start(self):
         if self._task is None:self._task=asyncio.create_task(self._run(),name='wechat_memory_dreaming')
@@ -26,10 +28,19 @@ class MemoryScheduler:
 
     async def close(self):
         self._stop.set();self._wake.set()
+        await self.jobs.close()
         if self._task:
             try:await asyncio.wait_for(self._task,timeout=85)
             except asyncio.TimeoutError:
                 self._task.cancel();await asyncio.gather(self._task,return_exceptions=True)
+
+    def _stale_backlog(self,s):
+        days=max(1,int(self.config.get('low_activity_max_wait_days',7)))
+        with self.store._lock:
+            row=self.store.db.execute('''SELECT MIN(r.received_at) FROM raw_messages r
+              JOIN room_state t ON t.platform=r.platform AND t.owner=r.owner AND t.room=r.room
+              WHERE r.platform=? AND r.owner=? AND r.room=? AND r.id>t.dream_cursor''',self.store._key(s)).fetchone()
+        return bool(row and row[0] and now()-row[0]>=days*86400)
 
     def _scheduled_now(self,s):
         cfg=self.config
@@ -41,7 +52,7 @@ class MemoryScheduler:
             urgent=self.store.db.execute('''SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=?
                 AND urgent=1 AND id>(SELECT dream_cursor FROM room_state WHERE platform=? AND owner=? AND room=?) LIMIT 1''',
                 (*self.store._key(s),*self.store._key(s))).fetchone()
-        if urgent:return True
+        if urgent or self._stale_backlog(s):return True
         if current.hour<hour:return False
         with self.store._lock:
             r=self.store.db.execute('''SELECT last_success FROM room_state WHERE platform=? AND owner=? AND room=?''',
@@ -76,6 +87,19 @@ class MemoryScheduler:
         async def one(s):
             async with sem:
                 if s.platform!=self.config.get('platform_id','wechat_pc_hook') or s.room not in self.allowed_rooms:return
+                if self.config.get('deferred_auto_retry') and self.config.get('reanalysis_enabled') and not self.store.options(s):
+                    with self.store.transaction():
+                        row=self.store.db.execute("""SELECT l.raw_id FROM analysis_ledger l JOIN raw_messages r ON r.id=l.raw_id
+                          WHERE l.platform=? AND l.owner=? AND l.room=? AND l.result='deferred'
+                          AND l.auto_attempts<2 AND COALESCE(l.last_attempt,0)<? AND r.text!=''
+                          AND NOT EXISTS(SELECT 1 FROM reanalysis_jobs j WHERE j.platform=l.platform AND j.owner=l.owner AND j.room=l.room AND j.status='running')
+                          ORDER BY l.raw_id LIMIT 1""",(*self.store._key(s),now()-86400)).fetchone()
+                        if row:self.store.db.execute('UPDATE analysis_ledger SET last_attempt=? WHERE platform=? AND owner=? AND room=? AND raw_id=?',(now(),*self.store._key(s),row['raw_id']))
+                    if row:
+                        job=self.store.replay_create(s,'automatic_deferred',row['raw_id'],row['raw_id'],'apply')
+                        self.store.replay_status(s,job['id'],'running')
+                        self.jobs.start_replay(s,job['id'])
+                        return
                 if not self._scheduled_now(s):return
                 count,_=self.store.backlog(s)
                 if count<max(1,int(self.config.get('min_messages_to_dream',10))):
@@ -83,7 +107,7 @@ class MemoryScheduler:
                         urgent=self.store.db.execute('''SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=? AND urgent=1
                           AND id>(SELECT dream_cursor FROM room_state WHERE platform=? AND owner=? AND room=?) LIMIT 1''',
                           (*self.store._key(s),*self.store._key(s))).fetchone()
-                    if not urgent:
+                    if not urgent and not self._stale_backlog(s):
                         if self.config.get('dreaming_v3_enabled',True):
                             from .v3_profile import consolidate
                             await consolidate(self,s)
@@ -157,9 +181,10 @@ class MemoryScheduler:
                 output_price=float(cfg.get('output_price_usd_per_million',0) or 0),
                 expected_output=max(0,int(cfg.get('estimated_output_tokens_per_run',1500)))):
                 return {'status':'budget_exceeded','estimated_input':estimate}
-            rid=self.store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
+            rid=''
             counted_in=estimate;counted_out=0;is_estimated=True;failed=True
             try:
+                rid=self.store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
                 if v2_enabled:
                     v2,est,in_tok,out_tok,is_estimated=await analyze_v2(
                         self.context,cfg['extraction_provider_id'],s,batch,existing,topics,observations)

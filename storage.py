@@ -32,6 +32,9 @@ class MemoryStore:
         self._lock = threading.RLock()
         self.db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False, timeout=10)
         self.db.row_factory = sqlite3.Row
+        if self.db.execute('PRAGMA user_version').fetchone()[0]>6:
+            self.db.close()
+            raise RuntimeError('Memory database is newer than supported schema 6')
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA busy_timeout=10000')
         self.db.execute('PRAGMA foreign_keys=ON')
@@ -183,6 +186,15 @@ class MemoryStore:
                     finally:
                         backup.close()
             migrate_v3(self.db)
+            from .people import migrate as migrate_people
+            people_backup=path.with_name(path.name+'.before-people.sqlite3')
+            if not people_backup.exists():
+                backup=sqlite3.connect(str(people_backup))
+                try:self.db.backup(backup)
+                finally:backup.close()
+            migrate_people(self.db)
+            from .budget import recover
+            recover(self)
             self.db.execute(
                 """UPDATE reanalysis_jobs SET status='paused',
                    last_error='interrupted_restart',updated_at=?
@@ -205,7 +217,7 @@ class MemoryStore:
         return s.platform, s.owner, s.room
 
     def enqueue(self, s: Scope, message_id: str, sender_id: str, text: str, timestamp: int,
-                urgent: bool = False, *, kind='text', reply_to_id='', media_path='', media_kind='', source='event') -> bool:
+                urgent: bool = False, *, kind='text', reply_to_id='', media_path='', media_kind='', source='event', identity_metadata=None) -> bool:
         if not isinstance(message_id, str) or not 0 < len(message_id) <= 220:
             return False
         if not isinstance(sender_id, str) or not 0 < len(sender_id) <= 256:
@@ -221,11 +233,11 @@ class MemoryStore:
             self.db.execute('INSERT OR IGNORE INTO room_state(platform,owner,room) VALUES(?,?,?)',self._key(s))
             cur = self.db.execute('''INSERT OR IGNORE INTO raw_messages
                 (platform,owner,room,message_id,sender_id,text,kind,message_at,received_at,
-                 reply_to_id,media_path,media_kind,source,status,urgent)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                 reply_to_id,media_path,media_kind,source,status,urgent,identity_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (*self._key(s),message_id,sender_id,text,kind,int(timestamp),now(),
                  str(reply_to_id)[:220],str(media_path)[:1024],str(media_kind)[:64],str(source)[:50],
-                 'skipped' if kind=='oversized' else 'ready',int(urgent)))
+                 'skipped' if kind=='oversized' else 'ready',int(urgent),json.dumps(identity_metadata or {},ensure_ascii=False) if len(json.dumps(identity_metadata or {},ensure_ascii=False))<=8192 else '{}'))
             return cur.rowcount > 0
 
     def scopes(self) -> list[Scope]:
@@ -309,30 +321,15 @@ class MemoryStore:
     def budget_reserve(self,s:Scope,estimated:int,*,purpose:str,limit_calls:int,limit_tokens:int,
                        day:str|None=None,max_usd:float=0,input_price:float=0,output_price:float=0,
                        expected_output:int=0)->bool:
-        today=day or day_key()
-        with self.transaction():
-            self.db.execute('INSERT OR IGNORE INTO memory_usage_daily(day,platform,owner,room,purpose) VALUES(?,?,?,?,?)',
-                            (today,*self._key(s),purpose))
-            r=self.db.execute('''SELECT calls,input_tokens,output_tokens,reserved_input FROM memory_usage_daily
-               WHERE day=? AND platform=? AND owner=? AND room=? AND purpose=?''',(today,*self._key(s),purpose)).fetchone()
-            if r['calls']>=limit_calls or r['input_tokens']+r['output_tokens']+r['reserved_input']+estimated+expected_output>limit_tokens:
-                return False
-            if max_usd>0 and input_price>0 and output_price>0:
-                estimate_usd=((r['input_tokens']+r['reserved_input']+estimated)*input_price
-                              +(r['output_tokens']+expected_output)*output_price)/1_000_000
-                if estimate_usd>max_usd:return False
-            self.db.execute('''UPDATE memory_usage_daily SET calls=calls+1,reserved_input=reserved_input+?
-               WHERE day=? AND platform=? AND owner=? AND room=? AND purpose=?''',
-                (estimated,today,*self._key(s),purpose))
-            return True
+        from .budget import reserve
+        return reserve(self,s,estimated,purpose=purpose,limit_calls=limit_calls,
+            limit_tokens=limit_tokens,day=day,max_usd=max_usd,input_price=input_price,
+            output_price=output_price,expected_output=expected_output)
 
     def budget_finish(self,s:Scope,estimated:int,actual_in:int,actual_out:int,*,purpose:str,estimated_usage:bool,error:bool,day:str|None=None):
-        with self.transaction():
-            self.db.execute('''UPDATE memory_usage_daily SET reserved_input=MAX(0,reserved_input-?),
-                input_tokens=input_tokens+?,output_tokens=output_tokens+?,
-                estimated=MAX(estimated,?), errors=errors+?
-                WHERE day=? AND platform=? AND owner=? AND room=? AND purpose=?''',
-                (estimated,max(0,actual_in),max(0,actual_out),int(estimated_usage),int(error),day or day_key(),*self._key(s),purpose))
+        from .budget import finish
+        return finish(self,s,estimated,actual_in,actual_out,purpose=purpose,
+                      estimated_usage=estimated_usage,error=error,day=day)
 
     def begin_run(self,s:Scope,cursor:int,end:int,provider:str,estimated:int,dry_run:bool)->str:
         rid=uuid.uuid4().hex
@@ -583,11 +580,11 @@ class MemoryStore:
             return self.db.execute('''UPDATE profile_permissions SET allowed=0,changed_at=?
                WHERE platform=? AND owner=? AND user_id=? AND allowed=1''',(now(),platform,owner,user)).rowcount
 
-    def record_retrieval(self,s:Scope,user:str,mem_ids:list[str],raw_ids:list[int],chars:int,mode:str):
+    def record_retrieval(self,s:Scope,user:str,mem_ids:list[str],raw_ids:list[int],chars:int,mode:str,diagnostics=None):
         with self.transaction():
             self.db.execute('''INSERT INTO retrieval_audit(platform,owner,room,requester,selected_ids,raw_ids,
-                chars,mode,created_at) VALUES(?,?,?,?,?,?,?,?,?)''',
-                (*self._key(s),user,json.dumps(mem_ids),json.dumps(raw_ids),chars,mode,now()))
+                chars,mode,created_at,diagnostics) VALUES(?,?,?,?,?,?,?,?,?,?)''',
+                (*self._key(s),user,json.dumps(mem_ids),json.dumps(raw_ids),chars,mode,now(),json.dumps(diagnostics or {},ensure_ascii=False)))
             self.db.execute('''DELETE FROM retrieval_audit WHERE id IN
                 (SELECT id FROM retrieval_audit WHERE platform=? AND owner=? AND room=?
                  ORDER BY id DESC LIMIT -1 OFFSET 1000)''',self._key(s))
@@ -639,6 +636,11 @@ class MemoryStore:
                 DO UPDATE SET disabled=excluded.disabled,changed_at=excluded.changed_at''',
                 (*self._key(s),user,int(disabled),now()))
             if disabled:
+                self.db.execute('UPDATE room_state SET privacy_epoch=privacy_epoch+1 WHERE platform=? AND owner=? AND room=?',self._key(s))
+                self.db.execute('DELETE FROM alias_versions WHERE alias_id IN (SELECT id FROM member_aliases WHERE platform=? AND owner=? AND room=? AND subject_id=?)',(*self._key(s),user))
+                self.db.execute('DELETE FROM profile_progress WHERE platform=? AND owner=? AND room=? AND subject_id=?',(*self._key(s),user))
+                self.db.execute('DELETE FROM member_aliases WHERE platform=? AND owner=? AND room=? AND subject_id=?',(*self._key(s),user))
+                self.db.execute('DELETE FROM memory_claim_versions WHERE claim_id IN (SELECT id FROM memory_claims WHERE platform=? AND owner=? AND room=? AND subject_id=?)',(*self._key(s),user))
                 self.db.execute(
                     """DELETE FROM memory_claims
                        WHERE platform=? AND owner=? AND room=?
@@ -684,6 +686,8 @@ class MemoryStore:
             for mid in memories:
                 self.db.execute('DELETE FROM memory_versions WHERE memory_id=?',(mid,))
                 self.db.execute('DELETE FROM memories WHERE id=?',(mid,))
+            self.db.execute('UPDATE room_state SET privacy_epoch=privacy_epoch+1 WHERE platform=? AND owner=? AND room=?',self._key(s))
+            self.db.execute('DELETE FROM fragment_progress WHERE raw_id IN (SELECT id FROM raw_messages WHERE platform=? AND owner=? AND room=? AND sender_id=?)',(*self._key(s),user))
             erased_ids=[r['message_id'] for r in self.db.execute('''SELECT message_id FROM raw_messages
                 WHERE platform=? AND owner=? AND room=? AND sender_id=?''',(*self._key(s),user))]
             for candidate in self.db.execute('''SELECT c.id,c.sources_json FROM dream_candidates c
@@ -731,12 +735,23 @@ class MemoryStore:
                      JOIN raw_messages r ON r.id=x.raw_id
                      WHERE r.platform=? AND r.owner=? AND r.room=? AND r.sender_id=?)""",
                 (now(),*self._key(s),user))
+            self.db.execute('DELETE FROM profile_progress WHERE platform=? AND owner=? AND room=? AND subject_id=?',(*self._key(s),user))
+            self.db.execute('DELETE FROM memory_claim_versions WHERE claim_id IN (SELECT id FROM memory_claims WHERE platform=? AND owner=? AND room=? AND subject_id=?)',(*self._key(s),user))
+            self.db.execute('''DELETE FROM memory_claim_versions WHERE claim_id IN (
+                SELECT e.claim_id FROM claim_evidence e JOIN raw_messages r ON r.id=e.raw_id
+                WHERE r.platform=? AND r.owner=? AND r.room=? AND r.sender_id=?)''',(*self._key(s),user))
+            self.db.execute('''DELETE FROM event_versions WHERE event_id IN (
+                SELECT e.event_id FROM event_evidence e JOIN raw_messages r ON r.id=e.raw_id
+                WHERE r.platform=? AND r.owner=? AND r.room=? AND r.sender_id=?)''',(*self._key(s),user))
+            self.db.execute("UPDATE v3_run_details SET preview_json='' WHERE run_id IN (SELECT id FROM dream_runs WHERE platform=? AND owner=? AND room=?)",self._key(s))
             erased=self.db.execute('''DELETE FROM raw_messages WHERE platform=? AND owner=? AND room=? AND sender_id=?''',
                                    (*self._key(s),user)).rowcount
             self.db.execute('''DELETE FROM retrieval_audit WHERE platform=? AND owner=? AND room=? AND requester=?''',
                             (*self._key(s),user))
             self.db.execute('''DELETE FROM working_snapshots WHERE platform=? AND owner=? AND room=? AND subject_id=?''',
                             (*self._key(s),user))
+            self.db.execute('DELETE FROM alias_versions WHERE alias_id IN (SELECT id FROM member_aliases WHERE platform=? AND owner=? AND room=? AND subject_id=?)',(*self._key(s),user))
+            self.db.execute('DELETE FROM member_aliases WHERE platform=? AND owner=? AND room=? AND subject_id=?',(*self._key(s),user))
             from .v3_store import erase_member
             erase_member(self,s,user)
             # Any generated group record that lost ALL its original evidence must be quarantined.

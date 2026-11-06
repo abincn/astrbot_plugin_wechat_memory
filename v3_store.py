@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+import datetime as dt
+from zoneinfo import ZoneInfo
 
 from .storage import now
 
@@ -15,24 +17,20 @@ def key(s):
     return s.platform,s.owner,s.room
 
 
-def context(store,s,senders,*,event_limit=14,claim_limit=60):
+def context(store,s,senders,*,texts=(),event_limit=14,claim_limit=60):
+    from .policy import tokens_for_search
+    terms=sorted({term.lower() for text in texts for term in tokens_for_search(text) if len(term)>1},key=lambda term:(-len(term),term))[:12]
+    event_rank='+'.join("CASE WHEN instr(lower(title||' '||summary),?)>0 THEN 1 ELSE 0 END" for _ in terms) or '0'
+    claim_rank='+'.join("CASE WHEN instr(lower(content),?)>0 THEN 1 ELSE 0 END" for _ in terms) or '0'
     with store._lock:
         events=[dict(r) for r in store.db.execute(
-            """SELECT id,title,event_type,anchor_date,state,summary,revision
-               FROM memory_events WHERE platform=? AND owner=? AND room=?
-               ORDER BY updated_at DESC LIMIT ?""",(*key(s),event_limit))]
+            'SELECT id,title,event_type,anchor_date,state,summary,revision FROM memory_events WHERE platform=? AND owner=? AND room=? ORDER BY ('+event_rank+') DESC,updated_at DESC,id LIMIT ?',(*key(s),*terms,event_limit))]
         members=sorted(x for x in senders if not store.is_opted_out(s,x))[:60]
         conditions="subject_type!='member'"
-        if members:
-            placeholders=','.join('?' for _ in members)
-            conditions+=f" OR (subject_type='member' AND subject_id IN ({placeholders}))"
+        if members:conditions+=" OR (subject_type='member' AND subject_id IN ("+','.join('?' for _ in members)+'))'
         claims=[dict(r) for r in store.db.execute(
-            f"""SELECT id,event_id,subject_type,subject_id,claim_type,predicate,content,
-                       attribution,confidence,sensitivity,revision
-                FROM memory_claims WHERE platform=? AND owner=? AND room=?
-                AND status IN ('active','candidate','review') AND ({conditions})
-                ORDER BY updated_at DESC LIMIT ?""",
-            (*key(s),*members,claim_limit))]
+            "SELECT id,event_id,subject_type,subject_id,claim_type,predicate,content,attribution,confidence,sensitivity,revision FROM memory_claims WHERE platform=? AND owner=? AND room=? AND status IN ('active','candidate','review') AND ("+conditions+') ORDER BY ('+claim_rank+') DESC,updated_at DESC,id LIMIT ?',
+            (*key(s),*members,*terms,claim_limit))]
         return events,claims
 
 
@@ -44,12 +42,20 @@ def _in_scope(db,s,table,ident):
 
 def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_job_id='',skipped=(),consolidation_member=''):
     """One atomic event/claim/evidence/ledger/cursor commit. Caller owns model budget."""
-    raw={m['message_id']:m for m in messages}
+    raw={m['message_id']:m for m in proposal.get('_context_evidence',[])}
+    raw.update({m['message_id']:m for m in messages})
+    fragment=messages[0] if len(messages)==1 and '_fragment_start' in messages[0] else None
+    partial=bool(fragment and fragment['_fragment_end']<fragment['_fragment_total'])
+    prior_unresolved=False
     rejected=list(proposal.get('rejected_claims',[]))
     corrected=list(proposal.get('corrected_claims',[]))
     committed_claim_keys=set()
     changed_events=changed_claims=added_sources=0
     with store.transaction():
+        if store.options(s):raise PermissionError('Group paused before commit')
+        if fragment and not consolidation_member:
+            previous=store.db.execute('SELECT unresolved FROM fragment_progress WHERE job_id=? AND raw_id=?',(replay_job_id,fragment['id'])).fetchone()
+            prior_unresolved=bool(previous and previous['unresolved'])
         if consolidation_member:
             if store.is_opted_out(s,consolidation_member):
                 raise PermissionError('Member opted out of profiling')
@@ -70,6 +76,17 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
         links={}
         # Preview persists only the proposed JSON and independent job progress.
         if not dry_run:
+            for alias in proposal.get('aliases',[]):
+                subject=alias['subject_id']
+                if store.is_opted_out(s,subject):continue
+                if not store.db.execute('SELECT 1 FROM raw_messages WHERE platform=? AND owner=? AND room=? AND sender_id=?',(*key(s),subject)).fetchone():continue
+                ident=uuid.uuid4().hex;kind='self' if alias['own'] else 'third_party'
+                sources=[raw[mid] for mid in alias['source_message_ids']]
+                store.db.execute('''INSERT OR IGNORE INTO member_aliases
+                  (id,platform,owner,room,subject_id,name,kind,source,status,first_seen,last_seen,source_message_id)
+                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',(ident,*key(s),subject,alias['name'],kind,'extraction','candidate',min(m['message_at'] for m in sources),max(m['message_at'] for m in sources),sources[0]['message_id']))
+                ident=store.db.execute('SELECT id FROM member_aliases WHERE platform=? AND owner=? AND room=? AND subject_id=? AND name=? AND kind=?',(*key(s),subject,alias['name'],kind)).fetchone()[0]
+                for message in sources:store.db.execute('INSERT OR IGNORE INTO alias_sources VALUES(?,?)',(ident,message['id']))
             for item in proposal['events']:
                 ident=item.get('existing_id') or ''
                 source=[raw[x] for x in item['source_message_ids']]
@@ -87,6 +104,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                         (*key(s),item['title'],item['anchor_date'],item['event_type'])).fetchone()
                     if row:ident=row['id']
                 if ident:
+                    store.db.execute('INSERT INTO event_versions(event_id,revision,summary,state,actor,occurred_at) VALUES(?,?,?,?,?,?)',(ident,row['revision'],row['summary'],row['state'],run_id,now()))
                     store.db.execute(
                         """UPDATE memory_events SET summary=?,state=?,last_seen=MAX(last_seen,?),
                            updated_at=?,revision=revision+1
@@ -155,6 +173,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                         (*key(s),item['subject_type'],subject,item['claim_type'],
                          item['predicate'],item['content'],event_id or '')).fetchone()
                     if row:ident=row['id']
+                is_new=not bool(ident)
                 times=[m['message_at'] for m in evidence]
                 sensitivity=item['sensitivity']
                 policy='restricted_output' if sensitivity=='restricted' else 'contextual'
@@ -165,6 +184,19 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                 # A changed factual statement is a separate reviewable candidate, not a
                 # silent overwrite of established evidence or an invisible rejected change.
                 conflicting=bool(ident and row and row['content']!=item['content'])
+                conflict_target=ident if conflicting else item.get('related_id','')
+                relation_kind='conflict' if conflicting else item.get('relation','conflict')
+                if not conflict_target and is_new:
+                    from difflib import SequenceMatcher
+                    nearby=store.db.execute('''SELECT id,content FROM memory_claims WHERE platform=? AND owner=? AND room=?
+                      AND subject_type=? AND subject_id=? AND claim_type=? AND predicate=? AND COALESCE(event_id,'')=?
+                      AND status IN ('active','candidate','review') ORDER BY updated_at DESC LIMIT 50''',
+                      (*key(s),item['subject_type'],subject,item['claim_type'],item['predicate'],event_id or '')).fetchall()
+                    for neighbor in nearby:
+                        if SequenceMatcher(None,neighbor['content'],item['content']).ratio()>=0.88:
+                            conflict_target=neighbor['id'];relation_kind='possible_duplicate';break
+                if conflict_target==ident and not conflicting:conflict_target=''
+                if conflict_target:status='review'
                 if conflicting:
                     ident=''
                     status='review'
@@ -197,13 +229,30 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                          item['predicate'],item['content'],item['attribution'],
                          item.get('speaker_id',''),confidence,sensitivity,policy,status,
                          min(times),max(times),now(),now()))
+                if conflict_target:
+                    store.db.execute('INSERT OR IGNORE INTO claim_links(source_id,target_id,relation) VALUES(?,?,?)',(ident,conflict_target,relation_kind))
+                if is_new:
+                    from .people import classify
+                    purpose=item.get('purpose') or classify(item)[0]
+                    reason=item.get('purpose_reason') or classify(item)[1]
+                    if item['claim_type']=='behavior_pattern':
+                        try:zone=ZoneInfo(str(messages[0].get('_timezone','Asia/Shanghai')))
+                        except (ValueError,KeyError):zone=dt.timezone.utc
+                        days={dt.datetime.fromtimestamp(m['message_at'],zone).date() for m in evidence if m['sender_id']==subject}
+                        purpose='long_term' if len(days)>=2 else 'uncertain'
+                        reason='跨日直接行为观察' if len(days)>=2 else '行为模式缺少跨日证据'
+                    store.db.execute('UPDATE memory_claims SET purpose=?,purpose_reason=?,valid_until=? WHERE id=?',(purpose,reason,item.get('valid_until'),ident))
                 relation='reported' if item['attribution']=='third_party_statement' else 'support'
                 for m in evidence:
                     cur=store.db.execute(
                         'INSERT OR IGNORE INTO claim_evidence(claim_id,raw_id,relation) VALUES(?,?,?)',
                         (ident,m['id'],relation))
                     added_sources+=cur.rowcount
+                    if '_fragment_start' in m:
+                        store.db.execute('INSERT OR IGNORE INTO claim_spans VALUES(?,?,?,?)',(ident,m['id'],m['_fragment_start'],m['_fragment_end']))
                 if item['subject_type']=='member':
+                    if not consolidation_member:
+                        store.db.execute('INSERT INTO profile_progress(platform,owner,room,subject_id,cursor) VALUES(?,?,?,?,0) ON CONFLICT(platform,owner,room,subject_id) DO UPDATE SET cursor=MIN(cursor,?)',(*key(s),subject,min(m['id'] for m in evidence)-1))
                     store.db.execute(
                         """INSERT INTO consolidation_queue(platform,owner,room,subject_id,status,last_raw_id,updated_at)
                            VALUES(?,?,?,?,'pending',?,?)
@@ -226,6 +275,10 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                         else 'analyzed_with_evidence' if mid in sourced
                         else 'analyzed_no_signal')
                 reason='claim_attribution_requires_reanalysis' if result=='deferred' else ''
+                if fragment and (partial or prior_unresolved):
+                    result='deferred';reason='fragment_analysis_in_progress' if partial else 'fragment_attribution_requires_reanalysis'
+                if fragment and result=='analyzed_no_signal' and store.db.execute('SELECT 1 FROM claim_evidence WHERE raw_id=? LIMIT 1',(m['id'],)).fetchone():
+                    result='analyzed_with_evidence'
                 store.db.execute(
                     """INSERT INTO analysis_ledger
                        (platform,owner,room,raw_id,pipeline_version,result,reason,run_id,updated_at)
@@ -245,19 +298,26 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                          result=excluded.result,reason=excluded.reason,
                          run_id=excluded.run_id,updated_at=excluded.updated_at""",
                     (*key(s),m['id'],m['reason'],m['detail'],run_id,now()))
+        if not dry_run and not consolidation_member:
+            for m in messages:
+                store.db.execute("UPDATE analysis_ledger SET resolved_at=CASE WHEN result='deferred' THEN NULL ELSE ? END WHERE platform=? AND owner=? AND room=? AND raw_id=? AND pipeline_version=3",(now(),*key(s),m['id']))
+        if consolidation_member and not rejected and messages:
+            store.db.execute('INSERT INTO profile_progress(platform,owner,room,subject_id,cursor,offset) VALUES(?,?,?,?,?,?) ON CONFLICT(platform,owner,room,subject_id) DO UPDATE SET cursor=excluded.cursor,offset=excluded.offset',(*key(s),consolidation_member,fragment['id']-1 if partial else max(m['id'] for m in messages),fragment['_fragment_end'] if partial else 0))
         if consolidation_member:
             # An unresolved member attribution is not a completed profile consolidation.
             store.db.execute(
                 """UPDATE consolidation_queue SET status=?,updated_at=?
                    WHERE platform=? AND owner=? AND room=? AND subject_id=?""",
-                ('pending' if rejected else 'completed',now(),*key(s),consolidation_member))
+                ('pending',now(),*key(s),consolidation_member))
         elif replay_job_id:
+            if fragment:
+                store.db.execute('INSERT INTO fragment_progress(job_id,raw_id,offset,unresolved) VALUES(?,?,?,?) ON CONFLICT(job_id,raw_id) DO UPDATE SET offset=excluded.offset,unresolved=excluded.unresolved',(replay_job_id,fragment['id'],fragment['_fragment_end'],int(prior_unresolved or bool(rejected))))
             cur=store.db.execute(
                 """UPDATE reanalysis_jobs SET next_raw_id=?,batches_done=batches_done+1,
                    messages_scanned=messages_scanned+?,updated_at=?
                    WHERE id=? AND platform=? AND owner=? AND room=?
                    AND status='running' AND next_raw_id=?""",
-                (end+1,len(messages),now(),replay_job_id,*key(s),cursor+1))
+                (cursor+1 if partial else end+1,0 if partial else len(messages),now(),replay_job_id,*key(s),cursor+1))
             if cur.rowcount!=1:raise RuntimeError('History job changed during commit')
         elif not dry_run:
             cur=store.db.execute(
@@ -275,8 +335,8 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
         summary={
             'events':changed_events,'claims':changed_claims,
             'sources':added_sources,'analyzed':len(messages),
-            'no_signal':len(messages)-len(sourced|rejected_sources),
-            'deferred':len(rejected_sources),
+            'no_signal':len({m['message_id'] for m in messages}-(sourced|rejected_sources)),
+            'deferred':len({m['message_id'] for m in messages}&rejected_sources),
             'rejected_claims':len(rejected),
             'corrected_claims':len(corrected),
         }
@@ -289,7 +349,7 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
              'preview' if dry_run else 'profile_consolidation' if consolidation_member else 'replay_apply' if replay_job_id else 'live',
              json.dumps(proposal if dry_run else {'rejected_claims':rejected,
                                                     'corrected_claims':corrected},
-                        ensure_ascii=False)[:100000] if dry_run or rejected or corrected else ''))
+                        ensure_ascii=False) if dry_run or rejected or corrected else ''))
         store.db.execute(
             """UPDATE dream_runs SET status=?,changes_count=?,finished_at=? WHERE id=?""",
             ('preview' if dry_run else 'committed',changed_claims,now(),run_id))
@@ -329,12 +389,15 @@ def claims(store,s,limit=150,event_id='',subject=''):
 def sources(store,s,claim_id,limit=80):
     with store._lock:
         if not _in_scope(store.db,s,'memory_claims',claim_id):raise ValueError('Claim not in this group')
-        return [dict(r) for r in store.db.execute(
-            """SELECT r.message_id,r.sender_id,r.message_at,r.text,x.relation
+        result=[dict(r) for r in store.db.execute(
+            """SELECT r.id raw_id,r.message_id,r.sender_id,r.message_at,r.text,x.relation
                FROM claim_evidence x JOIN raw_messages r ON r.id=x.raw_id
                WHERE x.claim_id=? AND r.platform=? AND r.owner=? AND r.room=?
                ORDER BY r.message_at DESC LIMIT ?""",
             (claim_id,*key(s),max(1,min(limit,100))))]
+        for row in result:
+            row['spans']=[dict(span) for span in store.db.execute('SELECT start_offset,end_offset FROM claim_spans WHERE claim_id=? AND raw_id=?',(claim_id,row['raw_id']))]
+        return result
 
 
 def coverage(store,s):

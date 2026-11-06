@@ -147,6 +147,9 @@ async def analyze_pending(store,s,cfg,limit=3):
             store.enqueue(s,row['message_id']+':media',row['sender_id'],description,row['message_at'],False,
                           kind='media_text',source='media_derived',reply_to_id=row['message_id'])
             completed+=1
+        except asyncio.CancelledError:
+            errored=True
+            raise
         except Exception as exc:
             errored=True;failed+=1
             with store.transaction():

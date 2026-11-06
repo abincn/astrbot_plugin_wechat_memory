@@ -68,7 +68,7 @@ DDL = (
 
 def migrate(db: sqlite3.Connection) -> None:
     version = int(db.execute('PRAGMA user_version').fetchone()[0])
-    if version > 5:
+    if version > 6:
         raise RuntimeError('Memory database was created by a newer plugin')
     if version >= 3:
         return
