@@ -20,11 +20,14 @@ async function load(append=false){
   }
   if(state.view==='tasks')$('actions').append(button('更新任务状态',()=>load()));
   if(state.view==='settings'){
+    const path=element('input','');
+    path.placeholder='旧库或 Inbox 在 AstrBot 服务器／容器内的路径';
+    path.setAttribute('aria-label','手动导入数据库路径');
+    path.style.width='100%';
     $('content').append(element('p','导入旧插件数据库或 Hook Inbox，旧文件保持只读。导入不会自动调用模型；每次最多500条，可重复继续。'),
-      button('选择服务器上的导入路径',async()=>{
-        const path=prompt('数据库在 AstrBot 服务器或容器内的绝对路径');if(path===null)return;
-        detail(await api('import',{path}));
-      }),button('完整导出到服务器文件',async()=>detail(await api('export'))),
+      button('直接导入 Hook Inbox',async()=>detail(await api('import'))),
+      path,button('从填写的路径导入／继续',async()=>detail(await api('import',{path:path.value}))),
+      button('完整导出到服务器文件',async()=>detail(await api('export'))),
       button('暂停当前群',async()=>{await api('pause',{paused:true});}),
       button('恢复当前群',async()=>{await api('pause',{paused:false});}),
       button('恢复成员画像资格',async()=>{

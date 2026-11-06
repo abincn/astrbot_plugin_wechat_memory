@@ -1,6 +1,6 @@
 # 微信长期记忆 · 新内核预览
 
-当前版本 `0.5.0-alpha.1`。需要 AstrBot ≥ 4.24.0 和微信 PC Hook 连接器。运行时仅使用 Python 标准库与 AstrBot 自带接口。
+当前版本 `0.5.0-alpha.3`。需要 AstrBot ≥ 4.24.0 和微信 PC Hook 连接器。运行时仅使用 Python 标准库与 AstrBot 自带接口。
 
 ## 这次重构
 
@@ -27,7 +27,7 @@
 
 1. 停止旧插件调度，备份旧插件版本、配置及 SQLite 文件；运行中的数据库使用 SQLite backup API 制作一致副本。
 2. 切换到本预览版本，配置 `enabled`、`allowed_rooms`、`admin_users` 和 `extraction_provider_id`。首次启动创建新库。
-3. 工作台选择当前群，进入“导入与设置”，填写旧库或 Hook Inbox 在 AstrBot 服务器/容器内的绝对路径。开启 `backfill_enabled` 后才能导入。
+3. 工作台选择当前群，进入“导入与设置”，点击“直接导入 Hook Inbox”，程序从当前连接器读取路径并核对账号；也可以在页面输入旧库或 Inbox 在服务器/容器内的路径。开启 `backfill_enabled` 后才能导入。
 4. 每次最多导入500条，再次选择相同路径继续。程序只读打开来源，并使用一致性快照；不会改动 Hook 游标。重复消息按当前群和原平台消息 ID 去重。
 5. 核对数量、原话时间、成员名称与权限，然后主动启动历史分析。历史分析需开启 `reanalysis_enabled`，导入本身不调用模型。
 

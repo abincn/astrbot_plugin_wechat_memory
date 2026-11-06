@@ -34,7 +34,7 @@ def validate(payload):
         'event_edit':('id','revision','content'),
         'manual_add':('content',), 'claim_edit':('id','revision'), 'alias_add':('member','name'),
         'alias_edit':('id','revision','status'), 'link_resolve':('id','revisions','action'),
-        'disclose':('raw_id','disclosure'), 'pause':('paused',), 'privacy':('member','opted_out'), 'import':('path',),
+        'disclose':('raw_id','disclosure'), 'pause':('paused',), 'privacy':('member','opted_out'),
     }
     if any(field not in payload for field in required.get(op, ())):
         raise Failure('invalid_input', '缺少必填参数：'+','.join(required[op]))
@@ -163,7 +163,17 @@ class Panel:
         elif op=='import':
             if not app.config.get('backfill_enabled'):
                 raise Failure('disabled','请先开启历史导入')
-            return await asyncio.to_thread(app.transfer.import_file, p['path'], scope, 500)
+            path = p.get('path','').strip()
+            if not path:
+                adapter = self.context.get_platform_inst(scope.platform)
+                binding = getattr(adapter,'get_task_scope', None)
+                if binding is None:
+                    raise Failure('inbox_unavailable','当前连接器未提供 Inbox 路径，请在页面填写服务器路径后导入')
+                info = binding()
+                if info['owner'] != scope.owner:
+                    raise Failure('scope_denied','当前微信账号与所选归档账号不同，不能导入其 Inbox')
+                path = app.config.get('hook_inbox_db') or info['inbox_db']
+            return await asyncio.to_thread(app.transfer.import_file, path, scope, 500)
         elif op=='export':
             directory = app.directory/'exports'
             directory.mkdir(exist_ok=True)

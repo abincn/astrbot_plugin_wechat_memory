@@ -12,6 +12,8 @@ def field(row, *names):
 
 
 def records(value):
+    if value is None:
+        return []
     if isinstance(value, list):
         return value
     for name in ('contacts','data','contact','result'):
@@ -34,6 +36,7 @@ class Contacts:
             return {'status': 'unavailable', 'reason': '当前微信账号与归档账号不同'}
         try:
             async with asyncio.timeout(10):
+                resolved = set()
                 groups = records(await contacts.lookup('/GetContact', {'wxid':scope.room}))
                 for group in groups:
                     if field(group,'UserName','wxid') != scope.room:
@@ -41,10 +44,13 @@ class Contacts:
                     name = field(group,'NickName','display_name')
                     if name:
                         self.identity.set_room_name(scope, name)
-                    for member in group.get('members', []):
+                        resolved.add(scope.room)
+                    for member in records(group.get('members')):
                         member_id = field(member,'UserName','wxid')
                         self.identity.observe(scope, member_id, field(member,'DisplayName'), 'card', 'hook_contacts')
                         self.identity.observe(scope, member_id, field(member,'NickName'), 'nickname', 'hook_contacts')
+                        if field(member,'DisplayName','NickName'):
+                            resolved.add(member_id)
                 members = self.archive.members(scope)
                 # Bound each connector request, without hiding later members behind one overall cap.
                 for start in range(0, len(members), 100):
@@ -53,8 +59,21 @@ class Contacts:
                     for row in response:
                         member_id = field(row,'UserName','wxid')
                         if member_id in wanted:
-                            self.identity.observe(scope, member_id, field(row,'NickName','display_name'), 'nickname', 'hook_contacts')
-            return {'status': 'updated'}
+                            name = field(row,'NickName','display_name')
+                            self.identity.observe(scope, member_id, name, 'nickname', 'hook_contacts')
+                            if name:
+                                resolved.add(member_id)
+                missing = ({scope.room} | {r['sender'] for r in members}) - resolved
+                if missing:
+                    for member_id, name in (await contacts.database.resolve(sorted(missing))).items():
+                        if member_id == scope.room:
+                            self.identity.set_room_name(scope, name)
+                        else:
+                            self.identity.observe(scope, member_id, name, 'nickname', 'hook_contacts')
+                        resolved.add(member_id)
+            if not resolved:
+                return {'status':'unavailable', 'reason':'Hook 联系人接口及联系人库均未取得当前群资料；已保留原名称，请检查 Hook 连接状态及连接器日志'}
+            return {'status': 'updated', 'resolved':len(resolved)}
         except Exception as exc:
             log.exception('联系人查询失败 scope=%s', scope.key)
             return {'status':'failed', 'reason':f'联系人查询失败：{type(exc).__name__}: {exc}'}
