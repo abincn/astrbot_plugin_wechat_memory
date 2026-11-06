@@ -23,7 +23,10 @@ sources 只能引用本批消息内部ID。引用与转述不等于作者本人�
 事件补充必须明确指向 existing_events 的同一场活动并填 existing_id/revision，不能只凭同名合并。
 没有足够信息允许空列表。无法完整阅读时 complete=false，deferred 列出未处理消息ID。
 所有字段必须返回；无值使用 null。画像模式只允许目标成员，不生成 events，最多12条。
-'''
+输出必须是单个 JSON 对象，顶层恰好包含 complete、deferred、events、claims 四个字段。
+输入的 mode、target_member、members、aliases、messages、existing、existing_events 都不是输出字段。
+不要复制输入包装，不要添加解释、Markdown 或额外的顶层字段。下列为唯一输出格式，示例值必须替换为本批真实资料；没有提取项时 events 和 claims 使用 []。
+''' + json.dumps(CONTRACT, ensure_ascii=False)
 
 
 def estimate(text):
@@ -60,7 +63,7 @@ class Analysis:
             rows = [r for r in rows if r['id']<=partial['id']]
             usable = [r for r in usable if r['id']<=partial['id']]
         while True:
-            data = {'mode': task['kind'], 'target_member': task['member'], 'contract': CONTRACT,
+            data = {'mode': task['kind'], 'target_member': task['member'],
                     'members': sorted({r['sender'] for r in usable} | {r['member'] for r in aliases}),
                     'aliases': [{'member': r['member'], 'name': r['name']} for r in aliases],
                     'messages': [{'id': r['id'], 'sender': r['sender'], 'at': r['at'], 'reply': r['reply'],
@@ -84,8 +87,12 @@ class Analysis:
     def validate(self, text, task, data, rows):
         # This is the one boundary for untrusted model output.
         value = json.loads(text)
-        if not isinstance(value, dict) or set(value) != set(CONTRACT):
-            raise Failure('model_contract', '模型返回字段与记忆协议不一致')
+        if not isinstance(value, dict):
+            raise Failure('model_contract', f'模型输出顶层必须为 JSON 对象，实际为 {type(value).__name__}')
+        if set(value) != set(CONTRACT):
+            missing = '、'.join(sorted(set(CONTRACT)-set(value))) or '无'
+            extra = '、'.join(sorted(set(value)-set(CONTRACT))) or '无'
+            raise Failure('model_contract', f'模型返回字段与记忆协议不一致；缺少：{missing}；多出：{extra}')
         sources = {r['id']: r for r in rows}
         if type(value['complete']) is not bool or not isinstance(value['deferred'], list) or not set(value['deferred']) <= set(sources):
             raise Failure('model_contract', '模型覆盖信息无效')

@@ -1,6 +1,6 @@
-import {state,$,api,element,button,perform,detail,labels} from './api.js';
-import {memberCard} from './members.js';
-import {taskCard} from './task-view.js';
+import {state,$,api,element,button,perform,detail,labels} from './api.js?v=0.5.0-alpha.4';
+import {memberCard} from './members.js?v=0.5.0-alpha.4';
+import {taskCard} from './task-view.js?v=0.5.0-alpha.4';
 
 const views={overview:'概览',members:'成员画像',claims:'事实与记忆',events:'群事件',messages:'原始群聊',tasks:'分析任务',deferred:'延期消息',aliases:'称呼审核',links:'冲突审核',calls:'模型用量',audits:'检索记录',settings:'导入与设置'};
 let page=null;

@@ -1,4 +1,4 @@
-import {api,button,element,labels,detail} from './api.js';
+import {api,button,element,labels,detail} from './api.js?v=0.5.0-alpha.4';
 
 export function memberCard(row, reload) {
   const node = element('article','');

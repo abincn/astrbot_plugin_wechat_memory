@@ -1,6 +1,6 @@
 # 微信长期记忆 · 新内核预览
 
-当前版本 `0.5.0-alpha.3`。需要 AstrBot ≥ 4.24.0 和微信 PC Hook 连接器。运行时仅使用 Python 标准库与 AstrBot 自带接口。
+当前版本 `0.5.0-alpha.4`。需要 AstrBot ≥ 4.24.0 和微信 PC Hook 连接器。运行时仅使用 Python 标准库与 AstrBot 自带接口。
 
 ## 这次重构
 

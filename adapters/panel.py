@@ -88,7 +88,9 @@ class Panel:
             return json_response({'data':result}, headers={'Cache-Control':'no-store'})
         except Exception as exc:
             log.exception('工作台请求失败 actor=%s', actor)
-            return json_response({'error':error_data(exc)}, headers={'Cache-Control':'no-store'})
+            error = error_data(exc)
+            return error_response(f"{error['message']} [{error['code']}]", data=error,
+                                  headers={'Cache-Control':'no-store'})
 
     async def dispatch(self, p, actor):
         app, op = self.app, p['operation']
