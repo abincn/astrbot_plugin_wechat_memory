@@ -58,6 +58,8 @@ def migrate(db):
           raw_id INTEGER REFERENCES raw_messages(id) ON DELETE CASCADE,
           PRIMARY KEY(alias_id,raw_id))''')
         room_columns={r[1] for r in db.execute('PRAGMA table_info(room_state)')}
+        if 'room_name' not in room_columns:db.execute("ALTER TABLE room_state ADD COLUMN room_name TEXT NOT NULL DEFAULT ''")
+        if 'name_updated_at' not in room_columns:db.execute('ALTER TABLE room_state ADD COLUMN name_updated_at INTEGER NOT NULL DEFAULT 0')
         if 'privacy_epoch' not in room_columns:db.execute('ALTER TABLE room_state ADD COLUMN privacy_epoch INTEGER NOT NULL DEFAULT 0')
         raw_columns={r[1] for r in db.execute('PRAGMA table_info(raw_messages)')}
         if 'identity_json' not in raw_columns:db.execute("ALTER TABLE raw_messages ADD COLUMN identity_json TEXT NOT NULL DEFAULT '{}'")

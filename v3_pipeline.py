@@ -66,10 +66,10 @@ def _usage_reason(store,s,estimate,cfg):
         limit_calls=max(1,int(cfg.get('max_calls_per_group_day',2)))
         limit_tokens=max(1000,int(cfg.get('max_tokens_per_group_day',40000)))
         reserved=max(0,int(cfg.get('estimated_output_tokens_per_run',1500)))
-        if calls>=limit_calls:return f'calls {calls}/{limit_calls}'
+        if calls>=limit_calls:return f'今日模型调用次数已达上限：{calls}/{limit_calls} 次。'
         if tokens+estimate+reserved>limit_tokens:
-            return f'tokens {tokens}+{estimate}+{reserved}/{limit_tokens}'
-        return 'configured dollar or other budget limit'
+            return f'今日用量预算不足：已使用及预留 {tokens}，本批预计输入 {estimate}、输出 {reserved}，上限 {limit_tokens}。'
+        return '预计费用超过已配置的金额预算，或其他用量限制。'
 
 
 def _record_empty(store,s,cursor,end,skipped,*,dry_run=False,replay_job_id=''):
@@ -248,9 +248,8 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                             max_messages=MIN(max_messages,excluded.max_messages),
                             updated_at=excluded.updated_at""",
                         (*v3_store.key(s),max(1,len(batch)//2),now()))
-            explanation=type(exc).__name__
-            if isinstance(exc,(TypeError,ValueError)):
-                explanation+=': '+str(exc)[:140]
+            from .errors import user_error
+            explanation=user_error(exc)
             store.finish_run(rid,'failed',error=explanation)
             if not replay_job_id:
                 store.fail_scope(s,explanation,

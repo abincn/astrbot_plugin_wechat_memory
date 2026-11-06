@@ -17,6 +17,8 @@ const TITLES={
   retrieval_audit:['检索审计','已记录的群内上下文调用。']
 };
 const LABELS={
+  disabled:'未启用',denied:'无权执行',retryable:'待缩批重试',transient:'上游暂时不可用',empty:'无待处理内容',
+  insufficient:'未达到处理门槛',budget_exceeded:'额度不足',busy:'有任务运行中',oversize:'内容过长',
   person_fact:'个人背景',preference:'偏好',behavior_pattern:'行为观察',event_detail:'事件细节',
   long_term:'长期画像',recent:'近期事项',event:'事件信息',uncertain:'待判断',unclassified:'待分类',
   settled:'已结算',needs_reconciliation:'用量待核对',reserved:'已预留',
@@ -510,24 +512,33 @@ function openEditor(mode,row=null){
   $('new-fields').hidden=mode!=='legacy_add';
   $('editor').showModal();
 }
-async function connect(){
-  await bridge.ready();
-  const r=await bridge.apiPost('manage',{operation:'scopes'});
+async function loadScopes(refresh=false){
+  const previous=state.scope;
+  const r=await bridge.apiPost('manage',{operation:'scopes',refresh});
   state.scopes=r.scopes||[];
   const select=$('scope');select.replaceChildren();
   for(const s of state.scopes){
-    const option=el('option',s.room+' · '+s.owner);option.value=s.room+'|'+s.owner;
+    const option=el('option',s.display_name||s.room_name||('群名未取得（'+s.room+'）'));
+    option.value=s.platform+'|'+s.owner+'|'+s.room;
+    option.title='群 ID：'+s.room+' · 微信账号：'+s.owner;
     select.append(option);
   }
-  if(!state.scopes.length){notice('暂无已归档的授权群。请确认插件已启用并配置群白名单。',true);return;}
-  state.scope=state.scopes[0];
-  await navigate('overview');
+  if(!state.scopes.length){state.scope=null;notice('暂无已归档的授权群。请确认插件已启用并配置群白名单。',true);return false;}
+  const index=previous?state.scopes.findIndex(s=>s.platform===previous.platform&&s.owner===previous.owner&&s.room===previous.room):-1;
+  select.selectedIndex=index>=0?index:0;
+  state.scope=state.scopes[select.selectedIndex];select.title=select.selectedOptions[0]?.title||'';
+  return true;
 }
+async function connect(){
+  await bridge.ready();
+  if(await loadScopes())await navigate('overview');
+}
+
 document.querySelectorAll('[data-view]').forEach(node=>node.addEventListener('click',()=>work(()=>navigate(node.dataset.view))));
 $('scope').addEventListener('change',()=>work(async()=>{
-  state.scope=state.scopes[$('scope').selectedIndex];await navigate(state.view);
+  state.scope=state.scopes[$('scope').selectedIndex];$('scope').title=$('scope').selectedOptions[0]?.title||'';await navigate(state.view);
 }));
-$('refresh').addEventListener('click',()=>work(()=>navigate(state.view)));
+$('refresh').addEventListener('click',()=>work(async()=>{if(await loadScopes(true))await navigate(state.view);}));
 $('refresh-overview').addEventListener('click',()=>work(loadOverview));
 $('list-refresh').addEventListener('click',()=>work(()=>loadRecords()));
 $('load-more').addEventListener('click',()=>work(()=>loadRecords(true,true)));

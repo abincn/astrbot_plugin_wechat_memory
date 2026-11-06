@@ -142,9 +142,10 @@ async def consolidate(scheduler,s,member=''):
             failed=False
             return {'status':'committed','run_id':rid,'member':member,**stats}
         except Exception as exc:
-            store.finish_run(rid,'failed',error=type(exc).__name__)
+            from .errors import user_error
+            store.finish_run(rid,'failed',error=user_error(exc))
             logger.warning('[wechat_memory] profile consolidation failed type=%s',type(exc).__name__)
-            return {'status':'failed','reason':type(exc).__name__,'run_id':rid}
+            return {'status':'failed','reason':user_error(exc),'run_id':rid}
         finally:
             store.budget_finish(s,estimated_in,actual_in,actual_out,purpose='dream',
                                 estimated_usage=estimated,error=failed,day=day)

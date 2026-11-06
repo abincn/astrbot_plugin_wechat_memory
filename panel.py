@@ -19,6 +19,8 @@ class MemoryPanel:
         self.store=store;self.config=config;self.allowed_rooms=allowed_rooms
         from .exports import ExportSessions
         self.exports=ExportSessions(store)
+        from .rooms import RoomNames
+        self.room_names=RoomNames(context,store)
         self.scheduler=scheduler;self.active=True;self.tasks=set();self.replay_tasks={}
         context.register_web_api('/astrbot_plugin_wechat_memory/manage',self.handle,
                                  ['POST'],'微信群长期记忆与 Dreaming 工作台')
@@ -46,6 +48,8 @@ class MemoryPanel:
             if not isinstance(parsed,dict):raise ValueError('Invalid body')
             payload=parsed
             op=payload.get('operation')
+            if op=='scopes':
+                return json_response({'scopes':await self.room_names.list(self.config.get('platform_id','wechat_pc_hook'),self.allowed_rooms,refresh=payload.get('refresh') is True)},headers={'Cache-Control':'no-store'})
             if op=='deferred_replay':
                 s=self._scope(payload)
                 if not self.config.get('enabled') or not self.config.get('reanalysis_enabled'):
@@ -123,14 +127,16 @@ class MemoryPanel:
                 self.store.replay_status(s,job_id,'paused' if op=='replay_pause' else 'cancelled')
                 return json_response({'job_id':job_id,'status':'paused' if op=='replay_pause' else 'cancelled'})
             data=await asyncio.to_thread(self._execute,payload,str(actor))
-            return json_response(data,headers={'Cache-Control':'no-store'})
+            from .errors import localize
+            return json_response(localize(data),headers={'Cache-Control':'no-store'})
         except PermissionError:
             return error_response('无权访问此账号/群的数据。',status_code=403)
         except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
+            from .errors import user_error
             if payload.get('operation')=='backfill':
-                return error_response('Hook Inbox 补录失败：'+str(exc)[:400],status_code=400)
+                return error_response('Hook Inbox 补录失败：'+user_error(exc)[:400],status_code=400)
             if str(payload.get('operation','')).startswith('replay_'):
-                return error_response('历史重分析：'+str(exc)[:200],status_code=400)
+                return error_response('历史重分析：'+user_error(exc)[:200],status_code=400)
             return error_response('操作参数、来源或版本无效，请查看群配置及记录状态。',status_code=400)
         except OSError as exc:
             if payload.get('operation')=='backfill':

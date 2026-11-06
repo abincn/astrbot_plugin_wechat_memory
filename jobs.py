@@ -1,6 +1,7 @@
 """Scheduler-owned task lifetime and persisted history diagnostics."""
 import asyncio
 import time
+from .errors import user_error
 
 
 class TaskCoordinator:
@@ -108,4 +109,4 @@ class TaskCoordinator:
             # A concurrent pause/cancel may already have changed the job state.
             job=self.store.replay_job(s,job_id)
             if job and job['status']=='running':
-                self.store.replay_status(s,job_id,'failed',type(exc).__name__)
+                self.store.replay_status(s,job_id,'failed',user_error(exc))

@@ -217,11 +217,12 @@ class MemoryScheduler:
                                'output_tokens':out_tok,'usage_estimated':is_estimated})
                 return report
             except Exception as exc:
-                self.store.finish_run(rid,'failed',error=type(exc).__name__)
+                from .errors import user_error
+                self.store.finish_run(rid,'failed',error=user_error(exc))
                 if not replay_job_id:
-                    self.store.fail_scope(s,type(exc).__name__,max(120,int(cfg.get('retry_delay_seconds',600))))
+                    self.store.fail_scope(s,user_error(exc),max(120,int(cfg.get('retry_delay_seconds',600))))
                 logger.warning('[wechat_memory] Dreaming failed room=%s type=%s',s.room,type(exc).__name__)
-                return {'status':'failed','run_id':rid,'reason':type(exc).__name__}
+                return {'status':'failed','run_id':rid,'reason':user_error(exc)}
             finally:
                 self.store.budget_finish(s,estimate,counted_in,counted_out,purpose='dream',
                                          estimated_usage=is_estimated,error=failed,day=charge_day)
