@@ -1,13 +1,48 @@
 """Scheduler-owned task lifetime and persisted history diagnostics."""
 import asyncio
 import time
+import uuid
 from .errors import user_error
 
 
 class TaskCoordinator:
     def __init__(self,scheduler):
         self.scheduler=scheduler;self.store=scheduler.store
-        self.active=True;self.tasks=set();self.replay_tasks={}
+        self.active=True;self.tasks=set();self.replay_tasks={};self.requests={}
+
+    def submit_analysis(self,s,dry_run=False):
+        if not self.active:raise ValueError('任务服务已停止，请刷新页面')
+        for ident,record in list(self.requests.items()):
+            if record['status']=='finished' and time.time()-record['updated_at']>1800:
+                del self.requests[ident]
+        if len(self.requests)>=100:
+            finished=[ident for ident,r in self.requests.items() if r['status']=='finished']
+            if not finished:raise ValueError('后台请求过多，请稍后重试')
+            del self.requests[finished[0]]
+        ident=uuid.uuid4().hex
+        record={'scope':self.store._key(s),'status':'queued','updated_at':time.time(),'result':None}
+        self.requests[ident]=record
+        async def execute():
+            record.update(status='running',updated_at=time.time())
+            try:
+                result=await self.scheduler.run_scope(s,dry_run=dry_run,force=True)
+            except asyncio.CancelledError:
+                record.update(status='finished',updated_at=time.time(),result={'status':'failed','reason':'服务已停止，请查看已保存的执行记录。'})
+                raise
+            except Exception as exc:
+                from astrbot.api import logger
+                logger.exception('[wechat_memory] 新消息分析请求失败')
+                result={'status':'failed','reason':user_error(exc)}
+            record.update(status='finished',updated_at=time.time(),result=result)
+        self.spawn(execute())
+        return {'scheduled':True,'request_id':ident}
+
+    def analysis_status(self,s,ident):
+        record=self.requests.get(ident)
+        if record is None:
+            return {'status':'unavailable','reason':'请求状态已过期或服务已重启，请查看分析执行记录。'}
+        if record['scope']!=self.store._key(s):raise PermissionError('Request outside current group')
+        return {key:value for key,value in record.items() if key!='scope'}
 
     def spawn(self,coro):
         task=asyncio.create_task(coro)

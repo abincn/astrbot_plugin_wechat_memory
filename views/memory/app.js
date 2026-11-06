@@ -140,7 +140,11 @@ async function refreshSummary(){
   $('action-pause').textContent=r.paused?'恢复自动分析':'暂停自动分析';
   $('action-pause').dataset.paused=String(r.paused);
 }
-function runTitle(r){return r.v3_detail?'V3 · '+label(r.status):'旧版 · '+label(r.status);}
+function runKind(r){
+  const mode=r.v3_detail?.mode;
+  return ({live:'新消息分析',preview:'新消息预览',replay_apply:'历史重分析批次',replay_preview:'历史预览批次',profile_consolidation:'画像巩固'})[mode]||(r.status==='running'?'正在分析':r.v2_detail?'旧版分析':'分析执行');
+}
+function runTitle(r){return runKind(r)+' · '+label(r.status);}
 async function loadOverview(){
   await refreshSummary();
   const r=await api('runs');
@@ -454,8 +458,62 @@ async function renderDetail(){
   }
   box.append(el('div',recordTitle(row),'detail-title'),codeDetails('查看完整记录',row));
 }
+async function openExecution(id){
+  const r=await api('run_detail',{id});
+  await navigate('runs');
+  if(!state.rows.some(row=>String(row.id)===String(id)))state.rows.unshift(r.item);
+  state.selected=String(id);renderRecords();await renderDetail();
+}
+async function loadHistoryExecutions(append=false){
+  const scope=state.scope;
+  const r=await api('runs',{paged:true,limit:50,cursor:append?state.executionCursor:''});
+  if(scope!==state.scope)return;
+  state.executionCursor=r.next_cursor;
+  state.executions=append?[...(state.executions||[]),...(r.items||[])]:r.items||[];
+  const box=$('history-executions');box.replaceChildren();
+  $('history-executions-more').hidden=!r.has_more;
+  $('history-execution-count').textContent='已加载 '+fmtNum(state.executions.length)+' 条';
+  if(!state.executions.length)box.append(el('p','暂无执行记录。分析新消息后可在这里查看结果。','empty'));
+  for(const row of state.executions){
+    const b=el('button',undefined,'record');b.type='button';
+    b.append(el('small',fmtDate(row.created_at)),el('strong',runTitle(row)),
+      el('div','消息范围 '+row.from_cursor+' → '+row.to_cursor+(row.v3_detail?' · 本批处理 '+fmtNum(row.v3_detail.analyzed)+' 条':''),'record-foot'));
+    if(row.error)b.append(el('p',row.error,'inline-warning'));
+    b.addEventListener('click',()=>work(()=>openExecution(row.id)));box.append(b);
+  }
+}
+function watchAnalysis(requestId,scope){
+  const scopeKey=s=>s&&[s.platform,s.owner,s.room].join('|');let attempts=0;
+  async function poll(){
+    if(scopeKey(scope)!==scopeKey(state.scope))return;
+    if(state.busy){setTimeout(poll,500);return;}
+    try{
+      const response=await bridge.apiPost('manage',{...scope,operation:'run_status',request_id:requestId});
+      if(scopeKey(scope)!==scopeKey(state.scope))return;
+      if(state.view==='replay_jobs')await work(()=>loadHistoryExecutions());
+      if(scopeKey(scope)!==scopeKey(state.scope))return;
+      if(response.status==='finished'){
+        const result=response.result||{};
+        const success=['committed','preview','empty'].includes(result.status);
+        const message=result.status==='committed'?'新消息分析已完成并提交，可点击执行记录查看来源和结果。':result.status==='preview'?'新消息预览已完成，尚未写入正式记忆。':result.status==='empty'?'本次没有可直接分析的新文本，未调用模型；待处理媒体和缺失原文可在延期重评中查看。':result.reason||label(result.status)||'本次分析未完成，请查看执行记录。';
+        notice(message,!success);return;
+      }
+      if(response.status==='unavailable'){notice(response.reason,true);return;}
+      if(++attempts>=240){notice('分析仍未结束，请刷新分析执行记录查看最新状态。');return;}
+      setTimeout(poll,1500);
+    }catch(error){notice(error?.message||'查询分析状态失败，请刷新分析执行记录。',true);}
+  }
+  setTimeout(poll,500);
+}
+async function startAnalysis(dryRun){
+  const scope=state.scope;const r=await api(dryRun?'dry_run':'run_now');
+  await navigate('replay_jobs');
+  notice(dryRun?'已提交新消息预览，完成后将在分析执行记录中显示。':'已提交新消息分析，完成后将在分析执行记录中显示。');
+  if(r.request_id)watchAnalysis(r.request_id,scope);
+}
+
 async function loadJobs(){
-  const r=await api('replay_jobs');
+  const [r]=await Promise.all([api('replay_jobs'),loadHistoryExecutions()]);
   state.jobs=r.items||[];
   const active=state.jobs.filter(x=>['running','pending','paused','failed'].includes(x.status)).length;
   $('job-count').hidden=active===0;$('job-count').textContent=String(active);
@@ -551,14 +609,11 @@ function scheduleSearch(delay=400){
 $('query').addEventListener('input',()=>scheduleSearch());
 for(const id of ['filter-status','filter-kind'])$(id).addEventListener('change',()=>work(()=>loadRecords(false,true)));
 $('history-refresh').addEventListener('click',()=>work(loadJobs));
+$('history-executions-more').addEventListener('click',()=>work(()=>loadHistoryExecutions(true)));
 $('more-runs').addEventListener('click',()=>work(()=>navigate('runs')));
 $('action-history').addEventListener('click',()=>work(()=>navigate('replay_jobs')));
-$('action-run').addEventListener('click',()=>work(async()=>{
-  await api('run_now');notice('已安排新消息分析。稍后在“执行记录”中查看结果。');
-}));
-$('action-preview').addEventListener('click',()=>work(async()=>{
-  await api('dry_run');notice('已安排下一批预览，不会写入长期记忆，但会产生模型费用。');
-}));
+$('action-run').addEventListener('click',()=>work(()=>startAnalysis(false)));
+$('action-preview').addEventListener('click',()=>work(()=>startAnalysis(true)));
 $('action-profile').addEventListener('click',()=>work(async()=>{
   await api('v3_profile_consolidate');notice('已安排待巩固成员的画像综合。');
 }));

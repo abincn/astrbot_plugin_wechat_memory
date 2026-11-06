@@ -50,6 +50,10 @@ class MemoryPanel:
             if not isinstance(parsed,dict):raise ValueError('Invalid body')
             payload=parsed
             op=payload.get('operation')
+            if op=='run_status':
+                from .errors import localize
+                return json_response(localize(self.scheduler.jobs.analysis_status(
+                    self._scope(payload),str(payload.get('request_id','')))),headers={'Cache-Control':'no-store'})
             if op=='scopes':
                 if payload.get('refresh') is True:self.member_names.checked.clear()
                 return json_response({'scopes':await self.room_names.list(self.config.get('platform_id','wechat_pc_hook'),self.allowed_rooms,refresh=payload.get('refresh') is True)},headers={'Cache-Control':'no-store'})
@@ -71,7 +75,7 @@ class MemoryPanel:
                 if op=='media_run':
                     if not self.config.get('media_enabled'):raise ValueError('Media not enabled')
                     return json_response(self._background(analyze_pending(self.store,s,self.config,limit=3)))
-                return json_response(self._background(self.scheduler.run_scope(s,dry_run=op=='dry_run',force=True)))
+                return json_response(self.scheduler.jobs.submit_analysis(s,dry_run=op=='dry_run'))
             if op=='v3_profile_consolidate':
                 if not self.config.get('dreaming_v3_enabled',True):
                     raise ValueError('Dreaming V3 not enabled')
@@ -164,6 +168,17 @@ class MemoryPanel:
             return {'scopes':[dict(platform=s.platform,owner=s.owner,room=s.room) for s in self.store.scopes()
                    if s.platform==self.config.get('platform_id','wechat_pc_hook') and s.room in self.allowed_rooms]}
         s=self._scope(payload)
+        if op=='run_detail':
+            with self.store._lock:
+                row=self.store.db.execute('SELECT * FROM dream_runs WHERE id=? AND platform=? AND owner=? AND room=?',
+                    (str(payload.get('id','')),*self.store._key(s))).fetchone()
+                if not row:raise ValueError('执行记录不存在，请刷新')
+                item=dict(row)
+                detail=self.store.db.execute('SELECT * FROM v3_run_details WHERE run_id=?',(row['id'],)).fetchone()
+                if detail:item['v3_detail']=dict(detail)
+                legacy=self.store.v2_run_detail(s,row['id'])
+                if legacy:item['v2_detail']=legacy
+                return {'item':item}
         if op=='export_prepare':return self.exports.prepare(s,actor)
         if op=='export_next':return self.exports.next(s,actor,str(payload.get('token','')),payload.get('position'))
         if op=='export_cancel':
