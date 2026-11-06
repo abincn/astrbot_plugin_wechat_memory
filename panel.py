@@ -21,6 +21,8 @@ class MemoryPanel:
         self.exports=ExportSessions(store)
         from .rooms import RoomNames
         self.room_names=RoomNames(context,store)
+        from .member_names import MemberNames
+        self.member_names=MemberNames(context,store)
         self.scheduler=scheduler;self.active=True;self.tasks=set();self.replay_tasks={}
         context.register_web_api('/astrbot_plugin_wechat_memory/manage',self.handle,
                                  ['POST'],'微信群长期记忆与 Dreaming 工作台')
@@ -49,6 +51,7 @@ class MemoryPanel:
             payload=parsed
             op=payload.get('operation')
             if op=='scopes':
+                if payload.get('refresh') is True:self.member_names.checked.clear()
                 return json_response({'scopes':await self.room_names.list(self.config.get('platform_id','wechat_pc_hook'),self.allowed_rooms,refresh=payload.get('refresh') is True)},headers={'Cache-Control':'no-store'})
             if op=='deferred_replay':
                 s=self._scope(payload)
@@ -127,6 +130,8 @@ class MemoryPanel:
                 self.store.replay_status(s,job_id,'paused' if op=='replay_pause' else 'cancelled')
                 return json_response({'job_id':job_id,'status':'paused' if op=='replay_pause' else 'cancelled'})
             data=await asyncio.to_thread(self._execute,payload,str(actor))
+            if not str(op or '').startswith('export'):
+                data=await self.member_names.enrich(self._scope(payload),data)
             from .errors import localize
             return json_response(localize(data),headers={'Cache-Control':'no-store'})
         except PermissionError:

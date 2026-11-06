@@ -87,7 +87,7 @@ def aliases(store,scope,subject=''):
         rows=store.db.execute('SELECT * FROM member_aliases WHERE platform=? AND owner=? AND room=?'
             +(' AND subject_id=?' if subject else '')+' ORDER BY last_seen DESC,id',
             (*key(scope),*((subject,) if subject else ())))
-        return [dict(r) for r in rows if not store.is_opted_out(scope,r['subject_id'])]
+        return [dict(r) for r in rows if not store.is_opted_out(scope,r['subject_id']) and r['name']!=r['subject_id'] and r['name'] not in ('昵称未取得','未知昵称','未知用户')]
 
 
 def observe(store,scope,subject,name,kind='nickname',source='adapter',confirmed=True,source_message_id=''):
@@ -95,7 +95,7 @@ def observe(store,scope,subject,name,kind='nickname',source='adapter',confirmed=
         return
     if not isinstance(name,str):return
     name=name.strip()
-    if not name or len(name)>100:
+    if not name or name==subject or name in ('昵称未取得','未知昵称','未知用户') or len(name)>100:
         return
     stamp=int(time.time())
     with store.transaction():

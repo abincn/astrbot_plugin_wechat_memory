@@ -42,6 +42,7 @@ function fmtDate(seconds){
 }
 function fmtNum(n){return (Number(n)||0).toLocaleString('zh-CN');}
 function label(v){return LABELS[v]||String(v||'—');}
+function memberName(row,field='subject_id'){return row[field.replace(/_id$/,'')+'_name']||(row[field]?'昵称未取得':'当前群');}
 function notice(message,error=false){
   const box=$('status');
   box.hidden=!message;
@@ -173,12 +174,12 @@ function recordTitle(row,view=state.view){
   }
 }
 function recordCaption(row,view=state.view){
-  if(view==='v3_profiles')return row.subject_id+' · '+row.claims.length+' 条资料';
-  if(view==='v3_claims')return (row.subject_id||'群公共')+' · '+label(row.claim_type);
+  if(view==='v3_profiles')return row.display_name+' · '+row.claims.length+' 条资料';
+  if(view==='v3_claims')return memberName(row)+' · '+label(row.claim_type);
   if(view==='v3_events')return label(row.event_type)+(row.anchor_date?' · '+row.anchor_date:'');
   if(view==='v3_coverage')return '处理结果';
   if(view==='runs')return fmtDate(row.created_at)+' · '+(row.provider||'');
-  if(view==='history')return fmtDate(row.message_at)+' · '+(row.sender_id||'');
+  if(view==='history')return fmtDate(row.message_at)+' · '+memberName(row,'sender_id');
   return fmtDate(row.updated_at||row.created_at||row.message_at);
 }
 function recordId(row){return String(row.id??row.result??row.message_id??row.run_id??'');}
@@ -216,7 +217,7 @@ function filteredRecords(){
   return state.rows.filter(row=>{
     if(status&&(row.status||row.state)!==status)return false;
     if(kind&&(row.claim_type||row.kind||row.signal_type||row.event_type)!==kind)return false;
-    return !q||[row.content,row.title,row.summary,row.subject_id,row.sender_id,row.message_id,row.predicate]
+    return !q||[row.content,row.title,row.summary,row.display_name,row.subject_name,row.sender_name,row.subject_id,row.sender_id,row.message_id,row.predicate]
       .some(value=>String(value||'').toLowerCase().includes(q));
   });
 }
@@ -261,7 +262,7 @@ async function renderDetail(){
       box.append(button('称呼来源：'+alias.name,async()=>{
         const sources=await api('alias_sources',{id:alias.id});
         box.append(el('p','记录来源：'+alias.source));
-        for(const source of sources.items||[])box.append(sourceCard(source.text,source.sender_id+' · '+fmtDate(source.message_at)));
+        for(const source of sources.items||[])box.append(sourceCard(source.text,memberName(source,'sender_id')+' · '+fmtDate(source.message_at)));
       }));
       if(alias.status==='candidate')box.append(button('确认称呼：'+alias.name,async()=>{
         await api('alias_status',{id:alias.id,revision:alias.revision,status:'confirmed'});await loadRecords();
@@ -293,7 +294,7 @@ async function renderDetail(){
         box.append(button('查看证据',async()=>{
           const r=await api('v3_sources',{id:c.id});
           const detail=el('div');
-          for(const e of r.items||[])detail.append(sourceCard(e.text,e.sender_id+' · 原话时间 '+fmtDate(e.message_at)));
+          for(const e of r.items||[])detail.append(sourceCard(e.text,memberName(e,'sender_id')+' · 原话时间 '+fmtDate(e.message_at)));
           box.append(detail);
         }));
       }
@@ -302,7 +303,7 @@ async function renderDetail(){
   }
   if(view==='v3_claims'){
     box.append(el('div',row.content,'detail-title'),
-      metaRows([['主体',row.subject_id||'当前群'],['类别',label(row.claim_type)],
+      metaRows([['主体',memberName(row)],['主体账号 ID',row.subject_id],['类别',label(row.claim_type)],
         ['状态',label(row.status)],['可信度',label(row.confidence)],
         ['证据属性',label(row.attribution)],['敏感度',label(row.sensitivity)],
         ['关联事件',row.event_id],['最后证据',fmtDate(row.last_supported)],['版本','r'+row.revision]]));
@@ -324,7 +325,7 @@ async function renderDetail(){
     box.append(actions,el('h4','原始证据'));
     const r=await api('v3_sources',{id:row.id});
     if(!(r.items||[]).length)box.append(el('p','暂未找到对应原文来源。','muted'));
-    for(const e of r.items||[])box.append(sourceCard(e.text,e.sender_id+' · '+fmtDate(e.message_at)+' · '+label(e.relation)+' · '+e.message_id+(e.spans?.length?' · 原文片段 '+e.spans.map(s=>s.start_offset+'～'+s.end_offset).join('、'):'')));
+    for(const e of r.items||[])box.append(sourceCard(e.text,memberName(e,'sender_id')+' · '+fmtDate(e.message_at)+' · '+label(e.relation)+' · '+e.message_id+(e.spans?.length?' · 原文片段 '+e.spans.map(s=>s.start_offset+'～'+s.end_offset).join('、'):'')));
     const links=await api('claim_links',{id:row.id});
     for(const link of links.items||[]){
       box.append(sourceCard(link.target_content,'关联：'+link.relation+' · '+link.status));
@@ -350,7 +351,7 @@ async function renderDetail(){
     for(const c of related.items||[])box.append(sourceCard(c.content,label(c.claim_type)+' · '+label(c.status)));
     box.append(el('h4','原始群聊来源'));
     const sources=await api('v3_event_sources',{id:row.id});
-    for(const e of sources.items||[])box.append(sourceCard(e.text,e.sender_id+' · '+fmtDate(e.message_at)));
+    for(const e of sources.items||[])box.append(sourceCard(e.text,memberName(e,'sender_id')+' · '+fmtDate(e.message_at)));
     return;
   }
   if(view==='runs'){
@@ -375,7 +376,7 @@ async function renderDetail(){
         box.append(el('h4','安全调整的第三方说法'));
         for(const item of corrected.slice(0,20)){
           box.append(sourceCard(item.content||'待核实第三方说法',
-            '说话者：'+item.speaker_id+' · 被描述者：'+item.subject_id
+            '说话者：'+memberName(item,'speaker_id')+' · 被描述者：'+memberName(item)
             +' · 消息 ID：'+(item.source_message_ids||[]).join(', ')));
         }
       }
@@ -399,7 +400,7 @@ async function renderDetail(){
   }
   if(view==='memories'){
     box.append(el('div',row.content,'detail-title'),
-      metaRows([['作用域',row.scope],['成员',row.subject_id],['类型',row.kind],['状态',label(row.status)],['版本','r'+row.revision]]));
+      metaRows([['作用域',row.scope],['成员',memberName(row)],['成员账号 ID',row.subject_id],['类型',row.kind],['状态',label(row.status)],['版本','r'+row.revision]]));
     const actions=el('div',undefined,'detail-actions');
     if(row.status==='review')actions.append(button('批准',async()=>{
       await api('approve',{id:row.id,revision:row.revision});await loadRecords();
@@ -421,7 +422,7 @@ async function renderDetail(){
     }
     box.append(actions,el('h4','来源'));
     const sr=await api('sources',{id:row.id});
-    for(const v of sr.sources||[])box.append(sourceCard(v.text,v.sender_id+' · '+fmtDate(v.message_at||v.created_at)));
+    for(const v of sr.sources||[])box.append(sourceCard(v.text,memberName(v,'sender_id')+' · '+fmtDate(v.message_at||v.created_at)));
     const ver=await api('versions',{id:row.id});
     if((ver.items||[]).length)box.append(el('h4','历史版本'));
     for(const v of ver.items||[])box.append(sourceCard(v.previous_content,'r'+v.revision+' · '+v.action));
@@ -440,7 +441,7 @@ async function renderDetail(){
   }
   if(view==='history'){
     box.append(el('div',row.text||'（无文本）','detail-title'),
-      metaRows([['作者',row.sender_id],['发送时间',fmtDate(row.message_at)],['类型',row.kind],['消息 ID',row.message_id],['原文召回',row.disclosure==='public'?'已确认可公开':'未审核，不自动注入']]));
+      metaRows([['作者',memberName(row,'sender_id')],['作者账号 ID',row.sender_id],['发送时间',fmtDate(row.message_at)],['类型',row.kind],['消息 ID',row.message_id],['原文召回',row.disclosure==='public'?'已确认可公开':'未审核，不自动注入']]));
     box.append(button(row.disclosure==='public'?'撤销原文公开许可':'确认原文可在本群召回',async()=>{
       if(!await confirmAction('请确认整条原文适合当前群受众；受限主张与高风险内容仍会被拦截。'))return;
       await api('raw_disclosure',{id:row.id,disclosure:row.disclosure==='public'?'unreviewed':'public'});await loadRecords();
