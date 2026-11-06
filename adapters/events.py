@@ -2,17 +2,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from ..core.types import Scope
 
 ROOM_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{1,256}@chatroom$")
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{1,256}$")
-
-
-@dataclass(frozen=True)
-class Scope:
-    platform: str
-    owner: str
-    room: str
 
 
 def valid_room(room: object) -> bool:
@@ -32,7 +25,7 @@ def get_scope(event, platform_id: str, allowed_rooms: set[str]) -> Scope | None:
     return Scope(platform_id, owner, room)
 
 
-def plain_text(message, max_chars: int = 262144) -> str:
+def plain_text(message) -> str:
     """Only actual Plain components, never a guessed media description."""
     parts = []
     for component in getattr(message, "message", []) or []:
@@ -41,8 +34,6 @@ def plain_text(message, max_chars: int = 262144) -> str:
             if isinstance(text, str):
                 parts.append(text)
     result = " ".join(" ".join(parts).split())
-    if len(result) > max_chars:
-        return ""  # no silent truncation of evidence
     if result.startswith(("[附件未取得", "[图片未取得", "[视频未取得", "[文件传输通知")):
         return ""
     return result
