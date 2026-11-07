@@ -348,7 +348,7 @@ class MemoryStore:
         with self.transaction():
             self.db.execute('''UPDATE dream_runs SET status=?,changes_count=?,error=?,input_actual=?,
                 output_actual=?,output_estimated=?,finished_at=? WHERE id=?''',
-                (status,changes,error[:120],actual_in,actual_out,output_est,now(),rid))
+                (status,changes,error[:500],actual_in,actual_out,output_est,now(),rid))
 
     def fail_scope(self,s:Scope,reason:str,delay:int):
         with self.transaction():

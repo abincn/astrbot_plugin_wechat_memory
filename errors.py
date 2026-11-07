@@ -1,6 +1,12 @@
 """Translate current and historic operational diagnostics for the workbench."""
 MESSAGES=(
     ('direct_quote_not_in_source','引号中的原话未出现在所引用消息的正文中，未关联该证据。'),
+    ('Unexpected V3 protocol','模型没有返回 schema_version=3 的 JSON 对象。'),
+    ('Invalid claim event link','模型引用了本批未提供的事件，或事件引用字段类型无效。'),
+    ('Unknown claim','模型引用了本批未提供的主张 ID。'),
+    ('Stale claim revision','模型返回的主张版本与输入不一致。'),
+    ('Stale V3 claim revision','主张在模型调用期间被修改，请刷新后重试。'),
+    ('Provider did not return plain V3 response','模型返回了工具调用或非助手消息。'),
     ('Incomplete V3 coverage','模型未完整处理本批消息，需要缩小批次后重试。'),
     ('V3 proposal at limit','本批提取结果达到容量上限，需要缩小批次后重试。'),
     ('V3 proposal limit exceeded','本批提取结果超过容量上限，需要缩小批次后重试。'),
@@ -29,12 +35,15 @@ MESSAGES=(
 )
 
 
-def user_error(value):
+def user_error(value, *, keep_detail=False):
     text=str(value or '')
-    if not text:return ''
+    kind=type(value).__name__ if isinstance(value,Exception) else ''
+    if not text and not kind:return ''
+    if text.startswith('画像巩固失败 · '):return text
     for key,message in MESSAGES:
-        if key in text:return message
+        if key in text or key in kind:return message
     if any('\u4e00'<=c<='\u9fff' for c in text):return text
+    if keep_detail:return (text or kind)[:400]
     return '处理未完成：返回内容、参数或记录版本不符合要求，请检查执行记录后重试。'
 
 

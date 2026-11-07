@@ -322,16 +322,22 @@ def parse(text, messages, events, claims, auxiliary=()):
     obj['corrected_claims']=corrected
     return obj
 
-async def analyze(context, provider_id, scope, messages, events, claims, timeout=90, usage_observer=None):
+def system_prompt(messages, instructions=''):
+    return (SYSTEM+'\n辅助上下文仅作引用证据，不计入本批覆盖；不得将引用作者与转发者混淆。'
+            +'\n'+instructions+'\n本批必须回传的 batch_key：'+batch_coverage_key(messages))
+
+
+async def analyze(context, provider_id, scope, messages, events, claims, timeout=90, usage_observer=None, *, instructions=''):
     from astrbot.core.agent.tool import ToolSet
     prompt=build_prompt(scope,messages,events,claims)
+    system=system_prompt(messages,instructions)
     async with asyncio.timeout(timeout):
         resp=await context.llm_generate(chat_provider_id=provider_id,prompt=prompt,
-            system_prompt=SYSTEM+'\n辅助上下文仅作引用证据，不计入本批覆盖；不得将引用作者与转发者混淆。\n本批必须回传的 batch_key：'+batch_coverage_key(messages),tools=ToolSet())
+            system_prompt=system,tools=ToolSet())
     usage=getattr(resp,'usage',None)
     inp=getattr(usage,'prompt_tokens',None);out=getattr(usage,'completion_tokens',None)
     estimated=type(inp) is not int or type(out) is not int
-    if type(inp) is not int:inp=estimate_tokens(prompt+SYSTEM)
+    if type(inp) is not int:inp=estimate_tokens(prompt+system)
     if type(out) is not int:out=estimate_tokens(getattr(resp,'completion_text','') or '')
     if usage_observer:usage_observer(inp,out,estimated)
     if getattr(resp,'role','assistant')!='assistant' or getattr(resp,'tools_call_name',None):

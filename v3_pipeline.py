@@ -1,7 +1,6 @@
 """V3 task execution: dynamic source batching, budget and atomic progress."""
 from __future__ import annotations
 
-import asyncio
 import uuid
 
 from astrbot.api import logger
@@ -167,7 +166,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         # Output coverage also needs room for every message_id in the provider response.
         output_reserve=max(1500,int(cfg.get('estimated_output_tokens_per_run',1500)))
         while batch:
-            estimate=estimate_tokens(v3_extract.SYSTEM+v3_extract.build_prompt(s,batch,events,claims))
+            estimate=estimate_tokens(v3_extract.system_prompt(batch)+v3_extract.build_prompt(s,batch,events,claims))
             coverage_estimate=1200+len(batch)*4
             if estimate<=cap and coverage_estimate<=output_reserve:break
             if estimate>cap and batch[0].get('_auxiliary'):
