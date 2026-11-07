@@ -20,6 +20,8 @@ SYSTEM = """你是长期存在的微信群的证据整理器，不是个人简�
 relation=possible_duplicate|conflict|change_over_time；不要直接覆盖人工主张。
 不能将某人提议直接当作全体成员的共同决定。
 输入已有 events/claims 带有服务器给出的 id；同一实体优先复用 existing_id。
+同一人的同一主张即使措辞不同，也复用已有 existing_id 和 revision，并保留已有 content，只补充新证据。
+主题相近但意思不同应分别保留；无法确定等价时标为 possible_duplicate 待审核，不能擅自合并。
 新 events 用临时 ref（如 e1），新 claims 以 event_ref 引用本批新 ref 或已有 event id。
 只输出结构化 JSON；任何 source_message_ids 仅能来自本批 messages。
 可合理输出 0 条 claim，但不能假装没读到某条 message。

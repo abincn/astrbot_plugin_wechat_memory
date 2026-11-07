@@ -149,6 +149,8 @@ class MemoryPanel:
                 return error_response('0.5 原文补回失败：'+str(exc)[:400],status_code=400)
             if payload.get('operation')=='backfill':
                 return error_response('Hook Inbox 补录失败：'+user_error(exc)[:400],status_code=400)
+            if payload.get('operation') in ('claim_merge','claim_link_resolve'):
+                return error_response(user_error(exc)[:400],status_code=400)
             if str(payload.get('operation','')).startswith('replay_'):
                 return error_response('历史重分析：'+user_error(exc)[:200],status_code=400)
             return error_response('操作参数、来源或版本无效，请查看群配置及记录状态。',status_code=400)
@@ -205,29 +207,33 @@ class MemoryPanel:
                 return {'items':[dict(r) for r in self.store.db.execute('''SELECT l.*,c.content target_content,c.revision target_revision
                     FROM claim_links l JOIN memory_claims c ON c.id=l.target_id JOIN memory_claims a ON a.id=l.source_id
                     WHERE a.platform=? AND a.owner=? AND a.room=? AND c.platform=a.platform AND c.owner=a.owner AND c.room=a.room AND l.source_id=?''',(*self.store._key(s),str(payload.get('id',''))))]}
-        if op=='claim_link_resolve':
+        if op in ('claim_link_resolve','claim_merge'):
+            action='merge_into_target' if op=='claim_merge' else payload.get('action')
             with self.store.transaction():
                 ids=[str(payload.get('id','')),str(payload.get('target_id',''))]
                 rows=[self.store.db.execute('SELECT * FROM memory_claims WHERE id=? AND platform=? AND owner=? AND room=?',(ident,*self.store._key(s))).fetchone() for ident in ids]
-                if any(r is None for r in rows) or rows[0]['revision']!=payload.get('revision') or rows[1]['revision']!=payload.get('target_revision'):raise ValueError('Claim revision changed')
-                if ids[0]==ids[1] or not self.store.db.execute("SELECT 1 FROM claim_links WHERE source_id=? AND target_id=? AND status='pending'",ids).fetchone():raise ValueError('Conflict no longer pending')
-                if payload.get('action') not in ('keep_both','supersede_target','merge_into_target'):raise ValueError('Invalid conflict action')
-                if payload['action']=='merge_into_target':
+                if any(r is None for r in rows) or rows[0]['revision']!=payload.get('revision') or rows[1]['revision']!=payload.get('target_revision'):raise ValueError('主张版本已变化，请刷新后重试')
+                if ids[0]==ids[1]:raise ValueError('请选择两条不同的主张')
+                if op=='claim_link_resolve' and not self.store.db.execute("SELECT 1 FROM claim_links WHERE source_id=? AND target_id=? AND status='pending'",ids).fetchone():raise ValueError('该关联已不在待审核状态')
+                if action not in ('keep_both','supersede_target','merge_into_target'):raise ValueError('Invalid conflict action')
+                if action=='merge_into_target':
                     source,target=rows
-                    if (source['subject_type'],source['subject_id'],source['claim_type'],source['event_id'])!=(target['subject_type'],target['subject_id'],target['claim_type'],target['event_id']):raise ValueError('Cannot merge different identities or events')
-                    if target['status'] not in ('active','candidate','review'):raise ValueError('Target no longer usable')
+                    fields=('subject_type','subject_id','claim_type','event_id','attribution','speaker_id','sensitivity','use_policy','valid_until')
+                    if any(source[field]!=target[field] for field in fields):raise ValueError('仅可合并主体、类型、事件、归属、披露范围及有效期一致的主张')
+                    if any(r['status'] not in ('active','candidate','review') for r in rows):raise ValueError('主张已撤回、替代或失效，请刷新')
+                    if source['subject_type']=='member' and self.store.is_opted_out(s,source['subject_id']):raise PermissionError('成员已退出画像')
                     for r,reason in ((source,'merged_into:'+target['id']),(target,'evidence_merged_from:'+source['id'])):
                         self.store.db.execute('INSERT INTO memory_claim_versions(claim_id,revision,previous_content,previous_status,actor,reason,occurred_at) VALUES(?,?,?,?,?,?,strftime("%s","now"))',(r['id'],r['revision'],r['content'],r['status'],actor,reason))
                     self.store.db.execute('INSERT OR IGNORE INTO claim_evidence(claim_id,raw_id,relation) SELECT ?,raw_id,relation FROM claim_evidence WHERE claim_id=?',(target['id'],source['id']))
                     self.store.db.execute('INSERT OR IGNORE INTO claim_spans SELECT ?,raw_id,start_offset,end_offset FROM claim_spans WHERE claim_id=?',(target['id'],source['id']))
-                    self.store.db.execute("UPDATE memory_claims SET status='superseded',revision=revision+1 WHERE id=?",(source['id'],))
-                    self.store.db.execute('UPDATE memory_claims SET revision=revision+1,last_supported=MAX(last_supported,?) WHERE id=?',(source['last_supported'],target['id']))
-                if payload['action']=='supersede_target':
+                    self.store.db.execute("UPDATE memory_claims SET status='superseded',revision=revision+1,updated_at=strftime('%s','now') WHERE id=?",(source['id'],))
+                    self.store.db.execute("UPDATE memory_claims SET revision=revision+1,first_seen=MIN(first_seen,?),last_supported=MAX(last_supported,?),updated_at=strftime('%s','now') WHERE id=?",(source['first_seen'],source['last_supported'],target['id']))
+                if action=='supersede_target':
                     r=rows[1]
                     if (r['subject_type'],r['subject_id'],r['claim_type'])!=(rows[0]['subject_type'],rows[0]['subject_id'],rows[0]['claim_type']):raise ValueError('Cannot replace another identity')
                     self.store.db.execute('INSERT INTO memory_claim_versions(claim_id,revision,previous_content,previous_status,actor,reason,occurred_at) VALUES(?,?,?,?,?,?,strftime("%s","now"))',(r['id'],r['revision'],r['content'],r['status'],actor,'superseded_by:'+ids[0]))
                     self.store.db.execute("UPDATE memory_claims SET status='superseded',revision=revision+1 WHERE id=?",(r['id'],))
-                self.store.db.execute("UPDATE claim_links SET status=? WHERE source_id=? AND target_id=?",(payload['action'],*ids))
+                self.store.db.execute("UPDATE claim_links SET status=? WHERE source_id=? AND target_id=?",(action,*ids))
             return {'saved':True}
         if op=='alias_sources':
             with self.store._lock:

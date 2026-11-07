@@ -168,10 +168,12 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                     row=store.db.execute(
                         """SELECT * FROM memory_claims WHERE platform=? AND owner=? AND room=?
                            AND subject_type=? AND subject_id=? AND claim_type=? AND
-                           predicate=? AND content=? AND COALESCE(event_id,'')=?
+                           content=? AND COALESCE(event_id,'')=? AND attribution=? AND speaker_id=?
+                           AND sensitivity=? AND valid_until IS ?
                            ORDER BY updated_at DESC LIMIT 1""",
                         (*key(s),item['subject_type'],subject,item['claim_type'],
-                         item['predicate'],item['content'],event_id or '')).fetchone()
+                         item['content'],event_id or '',item['attribution'],item.get('speaker_id',''),
+                         item['sensitivity'],item.get('valid_until'))).fetchone()
                     if row:ident=row['id']
                 is_new=not bool(ident)
                 times=[m['message_at'] for m in evidence]
@@ -189,9 +191,11 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
                 if not conflict_target and is_new:
                     from difflib import SequenceMatcher
                     nearby=store.db.execute('''SELECT id,content FROM memory_claims WHERE platform=? AND owner=? AND room=?
-                      AND subject_type=? AND subject_id=? AND claim_type=? AND predicate=? AND COALESCE(event_id,'')=?
+                      AND subject_type=? AND subject_id=? AND claim_type=? AND COALESCE(event_id,'')=?
+                      AND attribution=? AND speaker_id=?
                       AND status IN ('active','candidate','review') ORDER BY updated_at DESC LIMIT 50''',
-                      (*key(s),item['subject_type'],subject,item['claim_type'],item['predicate'],event_id or '')).fetchall()
+                      (*key(s),item['subject_type'],subject,item['claim_type'],event_id or '',
+                       item['attribution'],item.get('speaker_id',''))).fetchall()
                     for neighbor in nearby:
                         if SequenceMatcher(None,neighbor['content'],item['content']).ratio()>=0.88:
                             conflict_target=neighbor['id'];relation_kind='possible_duplicate';break

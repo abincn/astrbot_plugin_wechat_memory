@@ -307,6 +307,33 @@ async function renderDetail(){
       }));box.append(area);
     }));
     box.append(el('p','已确认称呼：'+row.aliases.filter(a=>a.status==='confirmed').map(a=>a.name).join('、')));
+    if(row.claims.length>1){
+      const merge=el('details'), source=el('select'), target=el('select'), comparison=el('div');
+      const options=c=>{const option=el('option',fmtDate(c.last_supported)+' · '+c.content);option.value=c.id;return option;};
+      source.append(...row.claims.map(options));
+      const updateTargets=()=>{
+        target.replaceChildren(...row.claims.filter(c=>c.id!==source.value).map(options));
+        comparison.replaceChildren();
+      };
+      updateTargets();source.onchange=updateTargets;target.onchange=()=>comparison.replaceChildren();
+      const from=el('label','并入的主张：'), to=el('label','保留的主张：');from.append(source);to.append(target);
+      merge.append(el('summary','整理重复主张'),el('p','对照原话，确认两条意思相同后合并证据。'),from,to,
+        button('对照两条证据',async()=>{
+          const pair=[source.value,target.value].map(id=>row.claims.find(c=>c.id===id));
+          const evidence=await Promise.all(pair.map(c=>api('v3_sources',{id:c.id})));
+          comparison.replaceChildren();
+          pair.forEach((c,i)=>{
+            comparison.append(sourceCard(c.content,i===0?'并入的主张':'保留的主张'));
+            for(const e of evidence[i].items)comparison.append(sourceCard(e.text,memberName(e,'sender_id')+' · '+fmtDate(e.message_at)));
+          });
+          comparison.append(button('确认合并证据',async()=>{
+            if(!await confirmAction('确认这两条主张意思相同？保留所选主张的正文，合并两条的证据；被并入的主张和版本留在历史。'))return;
+            await api('claim_merge',{id:pair[0].id,target_id:pair[1].id,revision:pair[0].revision,target_revision:pair[1].revision});
+            await loadRecords(false,true);state.selected=recordId(row);renderRecords();await renderDetail();notice('已合并证据，原文与版本已保留。');
+          }));
+        }),comparison);
+      box.append(merge);
+    }
     for(const purpose of ['long_term','recent','event','uncertain','unclassified']){
       box.append(el('h4',label(purpose)));
       for(const c of row.claims.filter(c=>c.purpose===purpose)){
