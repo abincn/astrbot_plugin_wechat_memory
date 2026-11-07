@@ -43,7 +43,7 @@ async def consolidate(scheduler,s,member=''):
         with store._lock:
             # Include the subject's actual messages AND genuine third-party attribution in the same group.
             rows=[dict(r) for r in store.db.execute(
-                """SELECT DISTINCT r.id,r.message_id,r.sender_id,r.message_at,r.text,r.reply_to_id,r.kind,r.source
+                """SELECT DISTINCT r.id,r.message_id,r.sender_id,r.message_at,r.text,r.reply_to_id,r.kind,r.source,r.identity_json
                    FROM raw_messages r
                    WHERE r.platform=? AND r.owner=? AND r.room=?
                      AND r.text!='' AND r.id>?
@@ -84,6 +84,7 @@ async def consolidate(scheduler,s,member=''):
         # Ensure every available message id in prompt is counted toward coverage.
         for message in rows:message['_timezone']=cfg.get('dream_timezone','Asia/Shanghai')
         instructions=PROFILE_INSTRUCTIONS+'\n目标成员ID：'+member
+        system=v3_extract.system_prompt(cfg,'v3_profile_prompt',instructions)
         if fragment_offset and rows:
             if rows[0]['_content'].get('xml'):
                 return {'status':'oversize','reason':'XML 存在旧分片偏移，需重新整理，未调用模型'}
@@ -92,8 +93,8 @@ async def consolidate(scheduler,s,member=''):
             rows[0]['_fragment_total']=len(rows[0]['text'])
             rows[0]['text']=rows[0]['text'][fragment_offset:]
             rows[0]['_fragment_end']=fragment_offset+len(rows[0]['text'])
-        prompt=v3_extract.build_prompt(s,rows,[],existing)
-        while rows and estimate_tokens(v3_extract.system_prompt(rows,instructions)+prompt)>cap:
+        prompt,message_refs=v3_extract.build_prompt(rows,[],existing)
+        while rows and estimate_tokens(system+prompt)>cap:
             if existing:
                 existing.pop()
             elif len(rows)==1 and len(rows[0]['text'])>100 and not rows[0]['_content'].get('xml'):
@@ -103,9 +104,9 @@ async def consolidate(scheduler,s,member=''):
                 rows[0]['_fragment_end']=rows[0]['_fragment_start']+len(rows[0]['text'])
             else:
                 rows.pop()  # only commit a contiguous evidence prefix
-            prompt=v3_extract.build_prompt(s,rows,[],existing)
+            prompt,message_refs=v3_extract.build_prompt(rows,[],existing)
         if not rows:return {'status':'oversize','reason':'单条证据及 V3 协议超过画像输入上限，未调用模型'}
-        estimated_in=estimate_tokens(v3_extract.system_prompt(rows,instructions)+prompt)
+        estimated_in=estimate_tokens(system+prompt)
         day=day_key()
         if not store.budget_reserve(
             s,estimated_in,purpose='dream',
@@ -130,8 +131,8 @@ async def consolidate(scheduler,s,member=''):
         try:
             rid=store.begin_run(s,0,0,str(cfg['extraction_provider_id']),estimated_in,False)
             stage='请求模型'
-            payload,_,_,_=await v3_extract.analyze(scheduler.context,cfg['extraction_provider_id'],s,rows,[],existing,
-                                                    usage_observer=record_usage,instructions=instructions)
+            payload,_,_,_=await v3_extract.analyze(scheduler.context,cfg['extraction_provider_id'],rows,[],existing,
+                                                    prompt=prompt,system=system,message_refs=message_refs,usage_observer=record_usage)
             if payload['events'] or payload['aliases'] or len(payload['claims'])>PROFILE_MAX_CLAIMS:
                 raise ValueError(f"画像巩固只允许最多 {PROFILE_MAX_CLAIMS} 条主张；模型返回 {len(payload['claims'])} 条主张、{len(payload['events'])} 个事件、{len(payload['aliases'])} 个称呼")
             if any(c['subject_type']!='member' or c['subject_id']!=member or c['claim_type'] not in PROFILE_TYPES for c in payload['claims']):

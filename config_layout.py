@@ -7,6 +7,7 @@ from __future__ import annotations
 from astrbot.api import logger
 
 GROUPS = {
+    "prompt_settings": ("v3_extraction_prompt", "v3_profile_prompt"),
     "analysis_settings": (
         "dream_timezone", "dream_hour", "min_messages_to_dream",
         "low_activity_max_wait_days", "deferred_auto_retry",

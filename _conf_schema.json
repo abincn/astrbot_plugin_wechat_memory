@@ -45,6 +45,23 @@
     "description": "允许从 Hook Inbox 补录原始历史",
     "default": false
   },
+  "prompt_settings": {
+    "type": "object",
+    "description": "记忆提取提示词",
+    "hint": "只调整记忆内容与侧重点。V3 输出结构、证据规则和批次校验仍由程序维护；留空恢复默认。",
+    "items": {
+      "v3_extraction_prompt": {
+        "type": "text",
+        "description": "V3 新消息与历史分析提示词",
+        "default": "你是长期存在的微信群的证据整理器，不是个人简介登记员。\n从日常言谈、长期实际参与、群友对其他成员的介绍中逐渐认识群成员。记录有依据的本人陈述、第三方说法、真实互动、项目及任务。\n只有对未来交流有持续价值的背景、明确偏好或跨日行为才用 long_term；存钱、装修和出行计划用 recent，录视频、工具借用、路程耗时用 event，语境不足用 uncertain。"
+      },
+      "v3_profile_prompt": {
+        "type": "text",
+        "description": "成员画像巩固提示词",
+        "default": "根据目标成员的真实发言、可核实行为及明确归属的第三方证据，巩固对未来交流有帮助的稳定背景、明确偏好和跨日行为。\n成员不需要反复自我介绍。略过只在当时有用的琐事，无法确认时保留不确定性。"
+      }
+    }
+  },
   "analysis_settings": {
     "type": "object",
     "description": "高级 · 分析与预算",
