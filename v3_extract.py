@@ -30,7 +30,8 @@ reply_to_id 为消息短号；unavailable 表示未提供被引用消息，不�
 relation=possible_duplicate|conflict|change_over_time；不要直接覆盖人工主张。
 不能将某人提议直接当作全体成员的共同决定。
 输入已有 events/claims 带有服务器给出的 id；同一实体优先复用 existing_id。
-同一人的同一主张即使措辞不同，也复用已有 existing_id 和 revision，并保留已有 content，只补充新证据。
+同一主张即使措辞不同，也复用已有 existing_id 和 revision，并保留已有 content，只补充新证据。
+复用旧主张时，subject_type、subject_id、claim_type 必须原样复制。如果是不同主体或不同类型的新事实，existing_id 留空。
 主题相近但意思不同应分别保留；无法确定等价时标为 possible_duplicate 待审核，不能擅自合并。
 新 events 用临时 ref（如 e1），新 claims 以 event_ref 引用本批新 ref 或已有 event id。
 只输出结构化 JSON；source_message_ids 只能填 messages 或 auxiliary_context 中的 message_ref。
@@ -243,6 +244,15 @@ def parse(text, messages, events, claims, message_refs, auxiliary=()):
         speaker=c.get('speaker_id','')
         if not isinstance(speaker,str):
             raise ValueError('Invalid claim speaker identity')
+        if ident:
+            previous=existing_claims[ident]
+            changed=[label for field,label in (('subject_type','主体类别'),('subject_id','成员 ID'),('claim_type','主张类型'))
+                     if previous[field]!=c.get(field,'')]
+            if changed:
+                rejected.append({'reason':'模型复用了旧主张 ID，但'+'、'.join(changed)+'与旧主张不一致，需重新核对。',
+                                 'existing_id':ident,'subject_id':sub,'claim_type':c['claim_type'],
+                                 'content':c['content'],'source_message_ids':evidence})
+                continue
         if c['attribution']=='self_statement':
             if any(mids[mid]['_content']['authorship']!='sender_text' for mid in evidence):
                 rejected.append({'reason':'附件识别或分享内容不能认证为本人陈述',
@@ -319,10 +329,6 @@ def parse(text, messages, events, claims, message_refs, auxiliary=()):
                     'source_message_ids':evidence,
                 })
                 continue
-        if ident:
-            previous=existing_claims[ident]
-            if (previous['subject_type'],previous['subject_id'],previous['claim_type']) != (c['subject_type'],sub,c['claim_type']):
-                raise ValueError('Cannot reassign existing claim identity')
         quotes=DIRECT_QUOTE.findall(c['content'])
         if quotes:
             speaker=c.get('speaker_id','')
