@@ -1,5 +1,6 @@
 """Translate current and historic operational diagnostics for the workbench."""
 MESSAGES=(
+    ('direct_quote_not_in_source','引号中的原话未出现在所引用消息的正文中，未关联该证据。'),
     ('Incomplete V3 coverage','模型未完整处理本批消息，需要缩小批次后重试。'),
     ('V3 proposal at limit','本批提取结果达到容量上限，需要缩小批次后重试。'),
     ('V3 proposal limit exceeded','本批提取结果超过容量上限，需要缩小批次后重试。'),

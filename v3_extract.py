@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import re
+import unicodedata
 
 from .extraction import estimate_tokens
 from .message_content import CONTENT_RULES
@@ -69,6 +70,11 @@ CLAIM_TYPES={'person_fact','preference','behavior_pattern','relation_claim','gro
 ATTRIBUTION={'self_statement','third_party_statement','observed_behavior','group_decision'}
 CONFIDENCE={'confirmed','supported','reported','uncertain','contradicted'}
 SENSITIVITY={'normal','personal','restricted'}
+DIRECT_QUOTE=re.compile(r'(?:发言称|原话(?:是|为)?|表示|说(?:过|道)?|称|写道|提到)[：:\s]*(?:“([^”]+)”|「([^」]+)」|"([^"]+)")')
+
+
+def _literal(text):
+    return ''.join(unicodedata.normalize('NFKC',text).split())
 
 class CoverageError(ValueError):
     """Model-declared incomplete batch or invalid coverage contract; eligible to retry smaller."""
@@ -278,6 +284,22 @@ def parse(text, messages, events, claims, auxiliary=()):
             previous=existing_claims[ident]
             if (previous['subject_type'],previous['subject_id'],previous['claim_type']) != (c['subject_type'],sub,c['claim_type']):
                 raise ValueError('Cannot reassign existing claim identity')
+        quotes=DIRECT_QUOTE.findall(c['content'])
+        if quotes:
+            speaker=c.get('speaker_id','')
+            bodies={mid:_literal(mids[mid]['text']) for mid in evidence
+                    if (not speaker or mids[mid]['sender_id']==speaker)
+                    and mids[mid]['_content']['authorship']=='sender_text'}
+            phrases=[_literal(next(part for part in parts if part)) for parts in quotes]
+            matches=[{mid for mid,body in bodies.items() if phrase and phrase in body} for phrase in phrases]
+            supported=set().union(*matches) if all(matches) else set()
+            unsupported=[mid for mid in evidence if mid not in supported]
+            if unsupported:
+                rejected.append({'reason':'direct_quote_not_in_source','subject_id':sub,
+                                 'claim_type':c['claim_type'],'content':c['content'],
+                                 'source_message_ids':unsupported})
+            if not supported:continue
+            evidence=[mid for mid in evidence if mid in supported]
         c['source_message_ids']=evidence
         accepted.append(c)
     if len(es)==18 or len(cs)==40:raise CoverageError('V3 proposal at limit; shrink batch to prevent dropped claims')

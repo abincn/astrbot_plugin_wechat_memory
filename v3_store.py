@@ -272,13 +272,14 @@ def commit(store,s,run_id,cursor,end,messages,proposal,*,dry_run=False,replay_jo
             # references the same raw message.
             sourced={mid for e in proposal['events'] for mid in e['source_message_ids']}
             sourced.update(mid for c in proposal['claims'] for mid in c['source_message_ids'])
-            rejected_sources={mid for claim in rejected for mid in claim['source_message_ids']}
+            rejected_reasons={mid:claim['reason'] for claim in rejected for mid in claim['source_message_ids']}
+            rejected_sources=set(rejected_reasons)
             for m in ([] if consolidation_member else messages):
                 mid=m['message_id']
                 result=('deferred' if mid in rejected_sources
                         else 'analyzed_with_evidence' if mid in sourced
                         else 'analyzed_no_signal')
-                reason='claim_attribution_requires_reanalysis' if result=='deferred' else ''
+                reason=rejected_reasons.get(mid,'')
                 if fragment and (partial or prior_unresolved):
                     result='deferred';reason='fragment_analysis_in_progress' if partial else 'fragment_attribution_requires_reanalysis'
                 if fragment and result=='analyzed_no_signal' and store.db.execute('SELECT 1 FROM claim_evidence WHERE raw_id=? LIMIT 1',(m['id'],)).fetchone():

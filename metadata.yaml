@@ -1,6 +1,6 @@
 name: astrbot_plugin_wechat_memory
 display_name: 微信长期记忆
-version: 0.4.0-beta.5-dev.8
+version: 0.4.0-beta.5-dev.9
 author: abincn
 desc: PC Hook + AstrBot：原文证据归档、增量 Dreaming、成员画像、成本控制、群隔离与授权管理。
 repo: https://github.com/abincn/astrbot_plugin_wechat_memory

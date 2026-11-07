@@ -273,6 +273,9 @@ async function renderDetail(){
     box.append(metaRows([['用途',row.purpose],['结算状态',row.status],['预留输入',row.reserved_input],['预留输出',row.reserved_output],['输入用量',row.actual_input],['输出用量',row.actual_output],['用量类型',row.estimated?'估算':'模型返回'],['UTC记账日',row.day],['请求时间',fmtDate(row.created_at)]]));return;
   }
   if(view==='v3_profiles'){
+    const refreshProfile=async()=>{
+      await loadRecords(false,true);state.selected=recordId(row);renderRecords();await renderDetail();
+    };
     box.append(el('h3',row.display_name),el('p','账号：'+row.subject_id));
     const name=el('input');name.placeholder='管理员确认的称呼';
     box.append(name,button('添加称呼',async()=>{
@@ -317,7 +320,7 @@ async function renderDetail(){
       };
       updateTargets();source.onchange=updateTargets;target.onchange=()=>comparison.replaceChildren();
       const from=el('label','并入的主张：'), to=el('label','保留的主张：');from.append(source);to.append(target);
-      merge.append(el('summary','整理重复主张'),el('p','对照原话，确认两条意思相同后合并证据。'),from,to,
+      merge.append(el('summary','整理重复主张'),el('p','两条原话都支持同一意思时再合并；证据不符时，撤回错误主张。'),from,to,
         button('对照两条证据',async()=>{
           const pair=[source.value,target.value].map(id=>row.claims.find(c=>c.id===id));
           const evidence=await Promise.all(pair.map(c=>api('v3_sources',{id:c.id})));
@@ -329,7 +332,7 @@ async function renderDetail(){
           comparison.append(button('确认合并证据',async()=>{
             if(!await confirmAction('确认这两条主张意思相同？保留所选主张的正文，合并两条的证据；被并入的主张和版本留在历史。'))return;
             await api('claim_merge',{id:pair[0].id,target_id:pair[1].id,revision:pair[0].revision,target_revision:pair[1].revision});
-            await loadRecords(false,true);state.selected=recordId(row);renderRecords();await renderDetail();notice('已合并证据，原文与版本已保留。');
+            await refreshProfile();notice('已合并证据，原文与版本已保留。');
           }));
         }),comparison);
       box.append(merge);
@@ -337,13 +340,17 @@ async function renderDetail(){
     for(const purpose of ['long_term','recent','event','uncertain','unclassified']){
       box.append(el('h4',label(purpose)));
       for(const c of row.claims.filter(c=>c.purpose===purpose)){
+        const detail=el('div');
         box.append(sourceCard(c.content,label(c.status)+' · '+label(c.confidence)+' · 最后支持 '+fmtDate(c.last_supported)));
         box.append(button('查看证据',async()=>{
           const r=await api('v3_sources',{id:c.id});
-          const detail=el('div');
-          for(const e of r.items||[])detail.append(sourceCard(e.text,memberName(e,'sender_id')+' · 原话时间 '+fmtDate(e.message_at)));
-          box.append(detail);
-        }));
+          detail.replaceChildren(...r.items.map(e=>sourceCard(e.text,memberName(e,'sender_id')+' · 原话时间 '+fmtDate(e.message_at))));
+          detail.append(button('撤回本条主张',async()=>{
+            if(!await confirmAction('撤回这条主张？原文和历史版本仍保留。'))return;
+            await api('v3_claim_retract',{id:c.id,revision:c.revision});
+            await refreshProfile();notice('已撤回该条主张，原文与版本已保留。');
+          },'danger'));
+        }),detail);
       }
     }
     return;
