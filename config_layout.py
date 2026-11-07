@@ -12,6 +12,7 @@ GROUPS = {
         "dream_timezone", "dream_hour", "min_messages_to_dream",
         "low_activity_max_wait_days", "deferred_auto_retry",
         "max_messages_per_run", "max_input_tokens_per_run",
+        "v3_model_timeout_seconds", "v3_model_streaming",
         "max_calls_per_group_day", "max_tokens_per_group_day",
         "estimated_output_tokens_per_run",
     ),
@@ -64,4 +65,6 @@ def normalize(config):
         nested = config.get(group)
         if isinstance(nested, dict):
             flat.update(nested)
+    flat["v3_model_timeout_seconds"] = max(1, int(flat.get("v3_model_timeout_seconds", 90)))
+    flat.setdefault("v3_model_streaming", False)
     return flat

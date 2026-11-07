@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from contextlib import aclosing
 from pathlib import Path
 
 from .extraction import estimate_tokens
@@ -365,11 +366,24 @@ def system_prompt(config, prompt_key='v3_extraction_prompt', instructions=''):
     return '\n'.join((guidance,SYSTEM,instructions))
 
 
-async def analyze(context, provider_id, messages, events, claims, *, prompt, system, message_refs, timeout=90, usage_observer=None):
+async def analyze(context, provider_id, messages, events, claims, *, prompt, system, message_refs, timeout, streaming, usage_observer=None):
     from astrbot.core.agent.tool import ToolSet
     async with asyncio.timeout(timeout):
-        resp=await context.llm_generate(chat_provider_id=provider_id,prompt=prompt,
-            system_prompt=system,tools=ToolSet())
+        if streaming:
+            from astrbot.core.provider.provider import Provider
+            provider=await context.provider_manager.get_provider_by_id(provider_id)
+            if not isinstance(provider,Provider):
+                raise ValueError('找不到配置的分析模型，请检查提供方设置。')
+            if type(provider).text_chat_stream is Provider.text_chat_stream:
+                raise ValueError('当前分析模型的提供方不支持流式请求，请关闭 V3 流式模型请求。')
+            async with aclosing(provider.text_chat_stream(prompt=prompt,system_prompt=system,func_tool=ToolSet())) as stream:
+                async for resp in stream:
+                    if not resp.is_chunk:break
+                else:
+                    raise ValueError('模型流式响应已结束，但未返回完整结果。')
+        else:
+            resp=await context.llm_generate(chat_provider_id=provider_id,prompt=prompt,
+                system_prompt=system,tools=ToolSet())
     usage=getattr(resp,'usage',None)
     inp=getattr(usage,'prompt_tokens',None);out=getattr(usage,'completion_tokens',None)
     estimated=type(inp) is not int or type(out) is not int

@@ -92,6 +92,18 @@
         "description": "单次输入 Token 保守估算上限",
         "default": 16000
       },
+      "v3_model_timeout_seconds": {
+        "type": "int",
+        "description": "V3 模型单批超时（秒）",
+        "hint": "适用于新消息、历史分析和画像巩固。慢模型可先设为 300；提供方的超时设置仍独立生效。",
+        "default": 90
+      },
+      "v3_model_streaming": {
+        "type": "bool",
+        "description": "V3 使用流式模型请求",
+        "hint": "需要模型提供方支持流式响应。收到完整结果后才校验和保存，流式请求仍受单批超时限制。",
+        "default": false
+      },
       "max_calls_per_group_day": {
         "type": "int",
         "description": "每天每群 Dreaming 最大调用次数",

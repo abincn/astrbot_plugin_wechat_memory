@@ -118,8 +118,9 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         return {'status':'disabled','reason':'No provider configured'}
     if s.platform!=cfg.get('platform_id','wechat_pc_hook') or s.room not in scheduler.allowed_rooms or store.options(s):
         return {'status':'denied'}
+    timeout=cfg['v3_model_timeout_seconds']
     holder=uuid.uuid4().hex
-    if not store.acquire(s,holder,ttl=150):return {'status':'busy'}
+    if not store.acquire(s,holder,ttl=timeout+60):return {'status':'busy'}
     try:
         if replay_job_id:
             job=store.replay_job(s,replay_job_id)
@@ -209,6 +210,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
             from .budget import observe
             proposal,inp,out,estimated=await v3_extract.analyze(
                 scheduler.context,cfg['extraction_provider_id'],batch,events,claims,prompt=prompt,system=system,message_refs=message_refs,
+                timeout=timeout,streaming=cfg['v3_model_streaming'],
                 usage_observer=lambda i,o,e:observe(store,i,o,e,scope=s))
             if scheduler._stop.is_set() or not cfg.get('enabled') or s.room not in scheduler.allowed_rooms or store.options(s):
                 raise RuntimeError('Group disabled during Dreaming')

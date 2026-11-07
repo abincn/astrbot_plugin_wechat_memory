@@ -32,8 +32,9 @@ async def consolidate(scheduler,s,member=''):
             member=row['subject_id'] if row else ''
     if not member:return {'status':'empty','reason':'No pending member'}
     if s.platform!=cfg.get('platform_id','wechat_pc_hook') or s.room not in scheduler.allowed_rooms or store.options(s) or store.is_opted_out(s,member):return {'status':'denied'}
+    timeout=cfg['v3_model_timeout_seconds']
     holder=uuid.uuid4().hex
-    if not store.acquire(s,holder,ttl=150):return {'status':'busy'}
+    if not store.acquire(s,holder,ttl=timeout+60):return {'status':'busy'}
     try:
         cap=max(1000,min(16000,int(cfg.get('max_input_tokens_per_run',16000))))
         with store._lock:
@@ -132,7 +133,8 @@ async def consolidate(scheduler,s,member=''):
             rid=store.begin_run(s,0,0,str(cfg['extraction_provider_id']),estimated_in,False)
             stage='请求模型'
             payload,_,_,_=await v3_extract.analyze(scheduler.context,cfg['extraction_provider_id'],rows,[],existing,
-                                                    prompt=prompt,system=system,message_refs=message_refs,usage_observer=record_usage)
+                                                    prompt=prompt,system=system,message_refs=message_refs,
+                                                    timeout=timeout,streaming=cfg['v3_model_streaming'],usage_observer=record_usage)
             if payload['events'] or payload['aliases'] or len(payload['claims'])>PROFILE_MAX_CLAIMS:
                 raise ValueError(f"画像巩固只允许最多 {PROFILE_MAX_CLAIMS} 条主张；模型返回 {len(payload['claims'])} 条主张、{len(payload['events'])} 个事件、{len(payload['aliases'])} 个称呼")
             if any(c['subject_type']!='member' or c['subject_id']!=member or c['claim_type'] not in PROFILE_TYPES for c in payload['claims']):
@@ -153,7 +155,7 @@ async def consolidate(scheduler,s,member=''):
             kind=type(exc).__name__
             status=getattr(exc,'status_code',None)
             if stage=='请求模型':
-                detail=f'提供方返回 HTTP {status}' if type(status) is int else user_error(kind)
+                detail=f'提供方返回 HTTP {status}' if type(status) is int else user_error(exc)
             else:
                 detail=user_error(exc,keep_detail=True)
             reason=f'画像巩固失败 · {stage}（{kind}）：{detail}'
