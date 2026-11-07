@@ -4,6 +4,11 @@ import xml.etree.ElementTree as ET
 
 XML_START = re.compile(r'^<(?:\?xml\b|[A-Za-z_][\w:.-]*(?:\s|/?>))')
 MEDIA_LABELS = ('[图片]', '[语音]', '[视频]', '[表情]', '[文件]')
+HOOK_METADATA_PREFIXES = (
+    '[应用消息：仅接收内嵌元数据，未执行卡片操作]',
+    '[微信特殊消息 type=',
+    '[系统通知；未执行专用操作]',
+)
 CONTENT_RULES = '''消息 text 是本条可读正文。content.kind 标明正文性质。
 content.quote 是消息内嵌引用，作者和内容未经独立验证；它不是发送者本人原话，也不是新增证据消息ID。
 引用附件只有类型提示，不包含附件内容；不能根据引用元数据推测事实。
@@ -12,13 +17,21 @@ machine_generated 是附件识别结果，可能不完整或有误；不得将�
 '''
 
 
+def is_hook_metadata(text):
+    """Hook renders unsupported cards as Plain text with these fixed headers."""
+    return text.lstrip().startswith(HOOK_METADATA_PREFIXES)
+
+
 def prepare_message(row):
     if '_content' in row:
         return row
     text = row['text']
     content = {'kind':'text', 'authorship':'sender_text'}
     reason = ''
-    if row.get('kind') == 'media_text':
+    if is_hook_metadata(text):
+        text, reason = '', 'Hook 仅提供卡片或通知元数据，未送入模型'
+        content = {'kind':'hook_metadata', 'authorship':'shared_content'}
+    elif row.get('kind') == 'media_text':
         content = {'kind':'media_description', 'authorship':'machine_generated'}
     elif text.strip() in MEDIA_LABELS or (text.lstrip().startswith(MEDIA_LABELS) and '[附件未取得' in text):
         text, reason = '', '附件尚未解析，不进入文本记忆提取'
@@ -49,7 +62,7 @@ def prepare_message(row):
                         'sender_id':quote.findtext('fromusr', ''),
                         'display_name':quote.findtext('displayname', ''),
                         'message_id':quote.findtext('svrid', ''), 'message_type':quoted_type,
-                        'text':quoted_text[:4000] if quoted_type=='1' and not XML_START.match(quoted_text) else '',
+                        'text':quoted_text[:4000] if quoted_type=='1' and not XML_START.match(quoted_text) and not is_hook_metadata(quoted_text) else '',
                         'source':'embedded_quote_unverified',
                     }
                 reason = '' if text else '引用消息没有本条回复正文，待确认来源'

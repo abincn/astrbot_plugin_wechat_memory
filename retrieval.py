@@ -5,6 +5,7 @@ import re
 import time
 from zoneinfo import ZoneInfo
 from .policy import tokens_for_search, HIGH_RISK
+from .message_content import prepare_message
 
 _HISTORY=re.compile(r'之前|昨天|前天|上次|当时|提过|说过|讨论过|历史|以前|回顾|哪条消息|谁说|几号|什么时候')
 _DEEP=re.compile(r'全量历史|所有历史|过去.*个月|详细总结.*聊天|全面回顾|完整讨论')
@@ -121,7 +122,11 @@ async def recall(store,s,user_id,question,*,config):
                 diagnostic['filtered']['raw_not_cleared']=diagnostic['filtered'].get('raw_not_cleared',0)+1
                 continue
             if subjects and r['sender_id'] not in subjects:continue
-            line=f'- [群原文 msg={r["message_id"]} user={r["sender_id"]} ts={r["message_at"]}] {r["text"][:1600]}'
+            r=prepare_message(r)
+            if r['_deferred']:
+                diagnostic['filtered']['raw_pending_parse']=diagnostic['filtered'].get('raw_pending_parse',0)+1
+                continue
+            line=f'- [群消息 msg={r["message_id"]} user={r["sender_id"]} ts={r["message_at"]} 类型={r["_content"]["kind"]}] {r["text"][:1600]}'
             if length+len(line)>budget:continue
             parts.append(line);raw_ids.append(r['id']);length+=len(line)
     store.record_retrieval(s,user_id,selected,raw_ids,length,mode,diagnostic)

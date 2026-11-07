@@ -425,7 +425,7 @@ class MemoryStore:
         if self._fts and len(query)>=3 and all(ch not in query for ch in ('"','*')):
             try:
                 with self._lock:
-                    sql='''SELECT r.id,r.message_id,r.sender_id,r.text,r.message_at,r.reply_to_id
+                    sql='''SELECT r.id,r.message_id,r.sender_id,r.text,r.message_at,r.reply_to_id,r.kind
                          FROM raw_fts f JOIN raw_messages r ON r.id=f.rowid WHERE raw_fts MATCH ?
                          AND '''+' AND '.join('r.'+c for c in conditions)+''' ORDER BY bm25(raw_fts),r.message_at DESC LIMIT ?'''
                     return [dict(r) for r in self.db.execute(sql,[f'"{query}"',*params,min(limit,50)])]
@@ -433,13 +433,13 @@ class MemoryStore:
                 pass
         escaped=query.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
         with self._lock:
-            return [dict(r) for r in self.db.execute('''SELECT id,message_id,sender_id,text,message_at,reply_to_id
+            return [dict(r) for r in self.db.execute('''SELECT id,message_id,sender_id,text,message_at,reply_to_id,kind
                 FROM raw_messages WHERE '''+' AND '.join(conditions)+" AND text LIKE ? ESCAPE '\\' ORDER BY message_at DESC LIMIT ?",
                 [*params,'%'+escaped+'%',min(limit,50)])]
 
     def recent_raw(self,s:Scope,since:int,until:int,limit:int=30):
         with self._lock:
-            return [dict(r) for r in self.db.execute('''SELECT id,message_id,sender_id,text,message_at,reply_to_id
+            return [dict(r) for r in self.db.execute('''SELECT id,message_id,sender_id,text,message_at,reply_to_id,kind
               FROM raw_messages WHERE platform=? AND owner=? AND room=? AND message_at>=? AND message_at<?
               AND kind IN ('text','media_text') ORDER BY message_at DESC,id DESC LIMIT ?''',
               (*self._key(s),since,until,min(limit,50)))]

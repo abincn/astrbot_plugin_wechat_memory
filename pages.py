@@ -1,4 +1,6 @@
 """Whitelisted, scoped keyset pagination for management lists."""
+from .message_content import is_hook_metadata
+
 TABLES={
     'list':('memories','content','status','kind'),
     'v3_claims':('memory_claims','content','status','claim_type'),
@@ -10,6 +12,12 @@ TABLES={
     'model_calls':('model_calls','purpose','status','purpose'),
     'retrieval_audit':('retrieval_audit','requester','','mode'),
 }
+
+
+def _metadata_previews(rows, field):
+    for row in rows:
+        if is_hook_metadata(row[field]):
+            row['display_text']='[微信卡片或通知 · 仅有元数据]'
 
 
 def read(store,s,operation,payload):
@@ -43,6 +51,7 @@ def read(store,s,operation,payload):
                 WHERE l.platform=? AND l.owner=? AND l.room=? AND l.result='deferred'
                 AND l.raw_id>? AND (instr(lower(l.reason),?)>0 OR instr(lower(r.text),?)>0)
                 ORDER BY l.raw_id LIMIT ?''',(*key(s),int(cursor or 0),query,query,limit+1))]
+        _metadata_previews(rows,'content')
         return {'items':rows[:limit],'has_more':len(rows)>limit,'next_cursor':str(rows[limit-1]['id']) if len(rows)>limit else None}
     table,text,status_col,kind_col=TABLES[operation]
     numeric=operation in ('history','retrieval_audit')
@@ -74,5 +83,6 @@ def read(store,s,operation,payload):
                 if v3:r['v3_detail']=dict(v3)
                 v2=store.v2_run_detail(s,r['id'])
                 if v2:r['v2_detail']=v2
+    if operation=='history':_metadata_previews(rows,'text')
     return {'items':rows[:limit],'has_more':len(rows)>limit,
             'next_cursor':((str(rows[limit-1][date_column])+':') if date_column else '')+str(rows[limit-1]['id']) if len(rows)>limit else None}

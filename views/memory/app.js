@@ -163,13 +163,14 @@ async function loadOverview(){
 function recordTitle(row,view=state.view){
   switch(view){
     case 'model_calls':return label(row.status)+' · '+row.purpose;
-    case 'deferred_list':return row.reason+' · '+(row.content||'缺少原文，需重新导入');
+    case 'deferred_list':return row.reason+' · '+(row.display_text||row.content||'缺少原文，需重新导入');
     case 'v3_profiles':return row.display_name+' · '+row.content;
     case 'v3_claims':return row.content||'（无正文）';
     case 'v3_events':return row.title||'未命名事件';
     case 'v3_coverage':return label(row.result);
     case 'runs':return runTitle(row)+(row.v3_detail?' · '+fmtNum(row.v3_detail.analyzed)+' 条消息':' · '+fmtNum(row.changes_count)+' 处变更');
     case 'history':{
+      if(row.display_text)return row.display_text;
       if(!row.text)return '['+(row.kind||'媒体')+']';
       if(/^\s*(?:<\?xml\b|<msg\b|<appmsg\b)/u.test(row.text)){
         const root=new DOMParser().parseFromString(row.text,'application/xml').documentElement;
