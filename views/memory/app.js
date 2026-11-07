@@ -9,7 +9,7 @@ const TITLES={
   v3_claims:['事实与观察','可核实的成员背景、群决定、行为模式及第三方说法。'],
   v3_coverage:['消息覆盖','每条原始消息的 V3 处理结论，未提取不等于没阅读。'],
   runs:['执行记录','查看每一轮模型处理结果、错误及预览提案。'],
-  history:['原始群聊','已经归档的群聊内容，以原始来源为准。'],
+  history:['原始群聊','按发言时间倒序排列，点击查看未经改写的原文。'],
   memories:['旧版与人工记忆','历史保留的数据，可继续管理，但并非 V3 核心真相源。'],
   candidates:['旧版审核','升级前保存的差异候选与人工审核。'],
   topics:['旧版话题','V2 历史主题，仅作兼容参考。'],
@@ -17,6 +17,7 @@ const TITLES={
   retrieval_audit:['检索审计','已记录的群内上下文调用。']
 };
 const LABELS={
+  ready:'已归档',skipped:'已跳过',
   disabled:'未启用',denied:'无权执行',retryable:'待缩批重试',transient:'上游暂时不可用',empty:'无待处理内容',
   insufficient:'未达到处理门槛',budget_exceeded:'额度不足',busy:'有任务运行中',oversize:'内容过长',
   person_fact:'个人背景',preference:'偏好',behavior_pattern:'行为观察',event_detail:'事件细节',
@@ -168,7 +169,21 @@ function recordTitle(row,view=state.view){
     case 'v3_events':return row.title||'未命名事件';
     case 'v3_coverage':return label(row.result);
     case 'runs':return runTitle(row)+(row.v3_detail?' · '+fmtNum(row.v3_detail.analyzed)+' 条消息':' · '+fmtNum(row.changes_count)+' 处变更');
-    case 'history':return row.text||'['+(row.kind||'媒体')+']';
+    case 'history':{
+      if(!row.text)return '['+(row.kind||'媒体')+']';
+      if(/^\s*(?:<\?xml\b|<msg\b|<appmsg\b)/u.test(row.text)){
+        const root=new DOMParser().parseFromString(row.text,'application/xml').documentElement;
+        const app=root.tagName==='appmsg'?root:root.querySelector(':scope > appmsg');
+        if(app){
+          const title=app.querySelector(':scope > title')?.textContent.trim();
+          const kind=app.querySelector(':scope > type')?.textContent.trim();
+          const description=app.querySelector(':scope > des')?.textContent.trim();
+          if(kind==='57')return '[引用回复] '+(title||'（无正文）');
+          return ({'5':'[链接] ','6':'[文件] ','19':'[合并转发] '}[kind]||'[消息卡片] ')+(title||description||'（无标题）');
+        }
+      }
+      return row.text;
+    }
     case 'memories':return row.content;
     case 'candidates':return row.new_content||row.action;
     case 'topics':return row.title||row.summary;
@@ -228,7 +243,7 @@ function filteredRecords(){
 function renderRecords(){
   const box=$('items');box.replaceChildren();
   const rows=filteredRecords();
-  $('record-total').textContent=fmtNum(rows.length)+' 条记录';
+  $('record-total').textContent='已加载 '+fmtNum(rows.length)+' 条'+(state.hasMore?' · 还有更多':'');
   if(!rows.length){box.append(el('p','没有符合条件的记录。','empty'));return;}
   for(const row of rows){
     const id=recordId(row);const b=el('button',undefined,'record');b.type='button';
@@ -236,7 +251,7 @@ function renderRecords(){
     const head=el('div',undefined,'record-top');
     head.append(el('small',recordCaption(row)),el('span',recordStatus(row),'pill '+(row.status||row.state||'')));
     b.append(head,el('div',recordTitle(row),'record-body'),
-      el('div',(row.last_supported?'最后支持：':'记录更新：')+fmtDate(row.last_supported||row.updated_at||row.created_at||row.message_at),'record-foot'));
+      el('div',state.view==='history'?'归档时间：'+fmtDate(row.received_at):(row.last_supported?'最后支持：':'记录更新：')+fmtDate(row.last_supported||row.updated_at||row.created_at||row.message_at),'record-foot'));
     b.addEventListener('click',()=>work(async()=>{state.selected=id;renderRecords();await renderDetail();}));
     box.append(b);
   }

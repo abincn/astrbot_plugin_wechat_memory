@@ -46,14 +46,14 @@ def read(store,s,operation,payload):
         return {'items':rows[:limit],'has_more':len(rows)>limit,'next_cursor':str(rows[limit-1]['id']) if len(rows)>limit else None}
     table,text,status_col,kind_col=TABLES[operation]
     numeric=operation in ('history','retrieval_audit')
-    date_column={'list':'updated_at','v3_claims':'updated_at','v3_events':'updated_at','runs':'created_at','topics':'updated_at','observations':'updated_at','model_calls':'created_at'}.get(operation)
+    date_column={'history':'message_at','list':'updated_at','v3_claims':'updated_at','v3_events':'updated_at','runs':'created_at','topics':'updated_at','observations':'updated_at','model_calls':'created_at'}.get(operation)
     where=['t.platform=?','t.owner=?','t.room=?']
     args=[*key(s)]
     if cursor:
         if date_column:
             stamp,ident=cursor.split(':',1)
             where.append('(t.'+date_column+'<? OR (t.'+date_column+'=? AND t.id<?))')
-            args.extend([int(stamp),int(stamp),ident])
+            args.extend([int(stamp),int(stamp),int(ident) if numeric else ident])
         else:
             where.append('t.id<?');args.append(int(cursor) if numeric else cursor)
     ordering=('t.'+date_column+' DESC,' if date_column else '')+'t.id DESC'

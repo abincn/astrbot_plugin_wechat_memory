@@ -14,7 +14,7 @@ from pathlib import Path
 from .identity import Scope
 from .schema_v3 import migrate
 from .v3_schema import migrate as migrate_v3
-from .policy import fingerprint, safe_content, topic_key
+from .policy import safe_content, topic_key
 
 
 def now():
@@ -451,9 +451,9 @@ class MemoryStore:
 
     def history(self,s:Scope,limit:int=60):
         with self._lock:
-            return [dict(r) for r in self.db.execute('''SELECT id,message_id,sender_id,text,message_at,kind,
+            return [dict(r) for r in self.db.execute('''SELECT id,message_id,sender_id,text,message_at,received_at,kind,
                  media_kind,reply_to_id,status FROM raw_messages WHERE platform=? AND owner=? AND room=?
-                 ORDER BY id DESC LIMIT ?''',(*self._key(s),min(limit,200)))]
+                 ORDER BY message_at DESC,id DESC LIMIT ?''',(*self._key(s),min(limit,200)))]
 
     def list_runs(self,s:Scope,limit:int=40):
         with self._lock:
