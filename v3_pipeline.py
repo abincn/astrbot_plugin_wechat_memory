@@ -5,6 +5,8 @@ import uuid
 
 from astrbot.api import logger
 
+from .budget import observe
+from .errors import task_error
 from .extraction import estimate_tokens
 from .storage import day_key,now
 from . import v3_extract,v3_store
@@ -205,13 +207,22 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                     'reason':_usage_reason(store,s,estimate,cfg),'estimated_input':estimate}
         rid=''
         inp=estimate;out=0;estimated=True;failed=True
+        stage='登记执行记录'
+
+        def record_usage(i,o,is_estimated):
+            nonlocal stage
+            stage='记录模型用量'
+            observe(store,i,o,is_estimated,scope=s)
+            stage='校验模型输出'
+
         try:
             rid=store.begin_run(s,cursor,end,str(cfg['extraction_provider_id']),estimate,dry_run)
-            from .budget import observe
+            stage='请求模型'
             proposal,inp,out,estimated=await v3_extract.analyze(
                 scheduler.context,cfg['extraction_provider_id'],batch,events,claims,prompt=prompt,system=system,message_refs=message_refs,
                 timeout=timeout,streaming=cfg['v3_model_streaming'],
-                usage_observer=lambda i,o,e:observe(store,i,o,e,scope=s))
+                usage_observer=record_usage)
+            stage='提交结果'
             if scheduler._stop.is_set() or not cfg.get('enabled') or s.room not in scheduler.allowed_rooms or store.options(s):
                 raise RuntimeError('Group disabled during Dreaming')
             if not store.lease_held(s,holder):raise RuntimeError('Lost group Dreaming lease')
@@ -219,6 +230,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                 store,s,rid,cursor,end,batch,proposal,
                 dry_run=dry_run,replay_job_id=replay_job_id,skipped=skipped)
             failed=False
+            stage='更新执行记录'
             if not dry_run and cfg.get('embedding_enabled'):
                 try:
                     from .claim_vectors import index_missing
@@ -241,6 +253,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                     'details':stats,'estimated_input':estimate,
                     'input_tokens':inp,'output_tokens':out,'usage_estimated':estimated}
         except Exception as exc:
+            logger.exception('[wechat_memory] V3 run failed room=%s run_id=%s stage=%s',s.room,rid,stage)
             # Model-side incomplete/invalid output shrinks the next batch; source cursor
             # remains unchanged. Do not treat database/authorization errors as shrink cues.
             retryable=isinstance(exc,v3_extract.CoverageError) and (len(batch)>1 or bool(replay_job_id and len(batch)==1 and '_fragment_start' in batch[0] and len(batch[0]['text'])>100))
@@ -261,13 +274,11 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                             max_messages=MIN(max_messages,excluded.max_messages),
                             updated_at=excluded.updated_at""",
                         (*v3_store.key(s),max(1,len(batch)//2),now()))
-            from .errors import user_error
-            explanation=user_error(exc)
+            explanation=task_error('V3 分析',stage,exc)
             store.finish_run(rid,'failed',error=explanation)
             if not replay_job_id:
                 store.fail_scope(s,explanation,
                                  max(120,int(cfg.get('retry_delay_seconds',600))))
-            logger.exception('[wechat_memory] V3 run failed room=%s',s.room)
             return {'status':'retryable' if retryable else 'transient' if transient else 'failed',
                     'run_id':rid,'reason':explanation}
         finally:

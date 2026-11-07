@@ -2,7 +2,7 @@
 import asyncio
 import time
 import uuid
-from .errors import user_error
+from .errors import task_error
 
 
 class TaskCoordinator:
@@ -32,7 +32,7 @@ class TaskCoordinator:
             except Exception as exc:
                 from astrbot.api import logger
                 logger.exception('[wechat_memory] 新消息分析请求失败')
-                result={'status':'failed','reason':user_error(exc)}
+                result={'status':'failed','reason':task_error('新消息分析','执行后台任务',exc)}
             record.update(status='finished',updated_at=time.time(),result=result)
         self.spawn(execute())
         return {'scheduled':True,'request_id':ident}
@@ -110,7 +110,7 @@ class TaskCoordinator:
                         self.store.db.execute('UPDATE reanalysis_jobs SET next_attempt=?,blocked_reason=? WHERE id=?',(__import__('time').time()+delay,'upstream_transient',job_id))
                     transient_retries+=1
                     if transient_retries>2:
-                        self.store.replay_status(s,job_id,'paused','上游暂时不可用；自动重试已达上限')
+                        self.store.replay_status(s,job_id,'paused',result['reason']+'；自动重试已达上限')
                         return
                     until=time.time()+delay
                     while self.active and time.time()<until:
@@ -140,8 +140,8 @@ class TaskCoordinator:
             raise
         except Exception as exc:
             from astrbot.api import logger
-            logger.exception('[wechat_memory] history worker failed: %s',type(exc).__name__)
+            logger.exception('[wechat_memory] history worker failed job_id=%s',job_id)
             # A concurrent pause/cancel may already have changed the job state.
             job=self.store.replay_job(s,job_id)
             if job and job['status']=='running':
-                self.store.replay_status(s,job_id,'failed',user_error(exc))
+                self.store.replay_status(s,job_id,'failed',task_error('历史重分析','执行后台任务',exc))
