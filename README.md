@@ -196,3 +196,7 @@ AstrBot 4.29.4 插件视图的 iframe 不允许浏览器原生 `confirm()`。此
 研究参考（不引入第三方运行时）：[openJiuwen Memory](https://github.com/openJiuwen-ai/agent-memory)、[JiuwenSwarm](https://github.com/openJiuwen-ai/jiuwenswarm)、[OpenDream](https://github.com/pylit-ai/opendream)、[Hermes Dreaming](https://github.com/alejandroiglesias/hermes-dreaming)。
 
 **验收**：根据先前项目约束，本次不编写任何测试代码；只进行语法/结构静态检查。是否能在实际 AstrBot 版本中安装、能否投递 Hook 媒体、Provider JSON 及 Dashboard bridge 是否兼容，都必须在测试群进行人工验收后才能判断生产可用。
+
+### 从 0.5 回退后的原文恢复
+
+0.4 使用 memory.sqlite3，不自动读取 0.5 的 memory_vNext.sqlite3。若 Hook Inbox 没有补到，可开启 backfill_enabled，在概览点击“补回 0.5 原文”。程序只读同一插件数据目录中的 memory_vNext.sqlite3，限定当前平台、账号与群，保留原文与发言时间并按平台消息 ID 去重。每次扫描500条；若提示尚有记录，继续点击，直到扫描完毕。已有记录不覆盖，生产分析游标不回拨，不调用模型，不导入0.5的画像或任务。源库不存在、没有匹配记录或读取失败时明确提示；源库未保存的全文无法恢复。

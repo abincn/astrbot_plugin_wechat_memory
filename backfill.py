@@ -6,6 +6,7 @@ be accessible from the AstrBot process (including its container namespace).
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -160,6 +161,54 @@ def import_inbox(store, location, platform, allowed_rooms: set[str], *, max_rows
             )
         elif not result['imported'] and not result['errors']:
             result['note'] = '没有新消息：可能已经补录过，或只包含重复/不支持的消息。'
+        return result
+    finally:
+        conn.close()
+
+
+def import_v05(store, scope, *, max_rows=500):
+    """Recover raw messages from the sibling 0.5 database, without loading its engine."""
+    with store._lock:
+        target = Path(store.db.execute('PRAGMA database_list').fetchone()['file'])
+    path = target.with_name('memory_vNext.sqlite3')
+    if not path.is_file():
+        raise ValueError('未找到 0.5 原文数据库：'+str(path)+'；请确认原文件仍位于插件数据目录')
+    source_hash = hashlib.sha256(('v05:'+str(path)).encode()).hexdigest()[:32]
+    conn = sqlite3.connect(path.resolve().as_uri()+'?mode=ro', uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute('BEGIN')
+        args = store._key(scope)
+        total = conn.execute('''SELECT COUNT(*) FROM messages m JOIN rooms r ON r.scope=m.scope
+            WHERE r.platform=? AND r.owner=? AND r.room=?''', args).fetchone()[0]
+        result = {'imported':0, 'duplicates':0, 'matching_rows':total, 'has_more':False,
+                  'source':'v05-database', 'note':''}
+        with store.transaction():
+            state = store.db.execute('SELECT last_sequence FROM import_cursors WHERE source_hash=? AND owner=? AND room=?',
+                                     (source_hash,scope.owner,scope.room)).fetchone()
+            cursor = state[0] if state else 0
+            rows = conn.execute('''SELECT m.* FROM messages m JOIN rooms r ON r.scope=m.scope
+                WHERE r.platform=? AND r.owner=? AND r.room=? AND m.id>? ORDER BY m.id LIMIT ?''',
+                (*args,cursor,max_rows)).fetchall()
+            for row in rows:
+                kind = 'oversized' if row['kind']=='missing_original' else row['kind']
+                disclosure = 'unreviewed' if row['disclosure']=='private' else row['disclosure']
+                # Preserve saved long text. enqueue()'s live-capture size limit would discard it.
+                inserted = store.db.execute('''INSERT OR IGNORE INTO raw_messages
+                    (platform,owner,room,message_id,sender_id,text,kind,message_at,received_at,
+                     reply_to_id,source,status,identity_json,disclosure) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (*args,row['message_id'],row['sender'],row['text'],kind,row['at'],now(),row['reply'],
+                     'v05-recovery','skipped' if kind=='oversized' else 'ready',
+                     json.dumps({'mentions':json.loads(row['mentions'])},ensure_ascii=False),disclosure)).rowcount
+                result['imported' if inserted else 'duplicates'] += 1
+                cursor = row['id']
+            store.db.execute('''INSERT INTO import_cursors VALUES(?,?,?,?,?)
+                ON CONFLICT(source_hash,owner,room) DO UPDATE SET
+                last_sequence=excluded.last_sequence,updated_at=excluded.updated_at''',
+                (source_hash,scope.owner,scope.room,cursor,now()))
+        result['has_more'] = bool(conn.execute('''SELECT 1 FROM messages m JOIN rooms r ON r.scope=m.scope
+            WHERE r.platform=? AND r.owner=? AND r.room=? AND m.id>? LIMIT 1''', (*args,cursor)).fetchone())
+        result['note'] = ('尚有记录，请继续点击补回。' if result['has_more'] else '当前账号与群的 0.5 原文已扫描完毕。') if total else '0.5 数据库中没有当前账号与群的消息，请核对所选账号和群。'
         return result
     finally:
         conn.close()

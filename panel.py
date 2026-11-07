@@ -7,7 +7,7 @@ import sqlite3
 
 from astrbot.api.web import error_response, json_response, request
 
-from .backfill import import_inbox
+from .backfill import import_inbox, import_v05
 from .evolution import resolve_candidate
 from .identity import Scope
 from .media import analyze_pending
@@ -83,10 +83,13 @@ class MemoryPanel:
                 from .v3_profile import consolidate
                 return json_response(self._background(consolidate(
                     self.scheduler,s,str(payload.get('subject_id',''))[:256])))
-            if op=='backfill':
+            if op in ('backfill','backfill_v05'):
                 if not self.config.get('enabled') or not self.config.get('backfill_enabled'):
                     raise ValueError('请先在插件配置中启用 backfill_enabled')
                 s=self._scope(payload)
+                if op=='backfill_v05':
+                    result=await asyncio.to_thread(import_v05,self.store,s)
+                    return json_response(result,headers={'Cache-Control':'no-store'})
                 path=str(self.config.get('hook_inbox_db','') or '').strip()
                 adapter=self.context.get_platform_inst(s.platform)
                 if adapter is None or not callable(getattr(adapter,'get_task_scope',None)):
@@ -142,14 +145,16 @@ class MemoryPanel:
             return error_response('无权访问此账号/群的数据。',status_code=403)
         except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
             from .errors import user_error
+            if payload.get('operation')=='backfill_v05':
+                return error_response('0.5 原文补回失败：'+str(exc)[:400],status_code=400)
             if payload.get('operation')=='backfill':
                 return error_response('Hook Inbox 补录失败：'+user_error(exc)[:400],status_code=400)
             if str(payload.get('operation','')).startswith('replay_'):
                 return error_response('历史重分析：'+user_error(exc)[:200],status_code=400)
             return error_response('操作参数、来源或版本无效，请查看群配置及记录状态。',status_code=400)
         except OSError as exc:
-            if payload.get('operation')=='backfill':
-                return error_response('Hook Inbox 文件不可用：'+str(exc)[:400],status_code=503)
+            if payload.get('operation') in ('backfill','backfill_v05'):
+                return error_response(('0.5 原文文件不可用：' if payload.get('operation')=='backfill_v05' else 'Hook Inbox 文件不可用：')+str(exc)[:400],status_code=503)
             return error_response('数据文件不可用。',status_code=503)
 
     def _scope(self,payload):

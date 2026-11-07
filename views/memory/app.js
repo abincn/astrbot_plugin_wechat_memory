@@ -620,7 +620,13 @@ $('action-profile').addEventListener('click',()=>work(async()=>{
 $('action-backfill').addEventListener('click',()=>work(async()=>{
   const r=await api('backfill',{limit:500});
   await loadOverview();
-  notice('Hook 补录：新增 '+fmtNum(r.imported)+' · 重复 '+fmtNum(r.duplicates)+' · 跳过 '+fmtNum(r.skipped));
+  notice('Hook 补录：新增 '+fmtNum(r.imported)+' · 重复 '+fmtNum(r.duplicates)+' · 跳过 '+fmtNum(r.skipped)
+    +(r.note?'；'+r.note:'')+(r.errors.length?'；'+r.errors.map(x=>x.error).join('；'):''));
+}));
+$('action-backfill-v05').addEventListener('click',()=>work(async()=>{
+  const r=await api('backfill_v05');
+  await loadOverview();
+  notice('0.5 原文：新增 '+fmtNum(r.imported)+' · 重复 '+fmtNum(r.duplicates)+' · 当前群源记录 '+fmtNum(r.matching_rows)+'；'+r.note);
 }));
 $('action-media').addEventListener('click',()=>work(async()=>{
   await api('media_run');
