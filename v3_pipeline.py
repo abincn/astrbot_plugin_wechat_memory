@@ -9,6 +9,7 @@ from astrbot.api import logger
 from .extraction import estimate_tokens
 from .storage import day_key,now
 from . import v3_extract,v3_store
+from .message_content import prepare_message
 
 
 def select_batch(store,s,*,cursor,end_limit=None,max_messages=500,max_chars=45000,replay_job_id=''):
@@ -29,14 +30,21 @@ def select_batch(store,s,*,cursor,end_limit=None,max_messages=500,max_chars=4500
             (*v3_store.key(s),*bounds,max(1,min(max_messages,500))))]
         batch=[];skipped=[];last=cursor;chars=0
         for row in rows:
-            size=len(row['text'])
             if row['kind'] not in ('text','media_text') or not row['text']:
                 detail=('missing_raw_requires_reimport' if row['kind']=='oversized' else 'media_pending_or_missing' if row['kind']=='media' else 'not_analyzable_text')
                 skipped.append({'id':row['id'],'reason':'deferred' if row['kind'] in ('oversized','media') else 'excluded_by_policy','detail':detail})
                 last=row['id'];continue
+            row=prepare_message(row)
+            if row['_deferred']:
+                skipped.append({'id':row['id'],'reason':'deferred','detail':row['_deferred']})
+                last=row['id'];continue
+            size=len(row['text'])
             previous_fragment=store.db.execute('SELECT offset,chunk_chars FROM fragment_progress WHERE job_id=? AND raw_id=?',(replay_job_id,row['id'])).fetchone() if replay_job_id else None
             if size>max_chars or previous_fragment:
                 if batch:break
+                if row['_content'].get('xml'):
+                    skipped.append({'id':row['id'],'reason':'deferred','detail':'XML 正文过长或存在旧分片，需单独整理，未送入模型'})
+                    last=row['id'];continue
                 if replay_job_id:
                     progress=store.db.execute('SELECT offset FROM fragment_progress WHERE job_id=? AND raw_id=?',(replay_job_id,row['id'])).fetchone()
                     offset=int(progress['offset']) if progress else 0
@@ -149,6 +157,8 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
         auxiliary=[];context_chars=0
         for source in store.raw_by_ids(s,refs).values():
             if source['message_id'] in {m['message_id'] for m in batch} or store.is_opted_out(s,source['sender_id']):continue
+            source=prepare_message(source)
+            if source['_deferred']:continue
             if not source['text'] or context_chars+len(source['text'])>6000:continue
             source['reply_to_id']='';auxiliary.append(source);context_chars+=len(source['text'])
         batch[0]['_auxiliary']=auxiliary
@@ -164,7 +174,7 @@ async def run(scheduler,s,*,dry_run=False,force=False,replay_job_id=''):
                 batch[0]['_auxiliary'].pop();continue
             if estimate>cap and claims:claims.pop();continue
             if estimate>cap and events:events.pop();continue
-            if len(batch)==1 and replay_job_id and len(batch[0]['text'])>100:
+            if len(batch)==1 and replay_job_id and len(batch[0]['text'])>100 and not batch[0]['_content'].get('xml'):
                 batch[0].setdefault('_fragment_start',0)
                 batch[0].setdefault('_fragment_total',len(batch[0]['text']))
                 batch[0]['text']=batch[0]['text'][:len(batch[0]['text'])//2]

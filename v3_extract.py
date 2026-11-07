@@ -7,6 +7,7 @@ import json
 import re
 
 from .extraction import estimate_tokens
+from .message_content import CONTENT_RULES
 
 SYSTEM = """你是长期存在的微信群的证据整理器，不是个人简介登记员。
 重要：从日常言谈、长期实际参与、群友对其他成员的介绍中逐渐认识群成员。
@@ -57,7 +58,7 @@ self_statement 只能用于 subject_type=member 且每条 source_message_ids 的
 多名成员发言时，不要把他们的证据合写成某一人的“本人自述”，应拆成不同主张或只引用本人原话。
 observed_behavior 必须有当事人的真实群内行为证据，不能把别人谈论该成员当作本人行为。
 member 画像必须有可指认的真实证据；不能凭没有证据的形容词臆测。
-"""
+""" + CONTENT_RULES
 
 EVENT_TYPES={'gathering','project','discussion','other'}
 EVENT_STATES={'planning','active','completed','cancelled','disputed'}
@@ -82,12 +83,14 @@ def build_prompt(scope, messages, events, claims):
         'scope':'this authorized wechat group only',
         'batch_coverage_key':batch_coverage_key(messages),
         'input_message_count':len(messages),
-        'auxiliary_context':messages[0].get('_auxiliary',[]) if messages else [],
+        'auxiliary_context':[{**{k:m[k] for k in ('message_id','sender_id','message_at','text')},
+                              'content':m['_content']} for m in (messages[0].get('_auxiliary',[]) if messages else [])],
         'member_aliases':messages[0].get('_aliases',[]) if messages else [],
         'events':[{k:r[k] for k in ('id','title','anchor_date','state','summary','revision')} for r in events],
         'claims':[{k:r[k] for k in ('id','event_id','subject_type','subject_id','claim_type',
                 'predicate','content','attribution','confidence','revision')} for r in claims],
         'messages':[{**{k:m[k] for k in ('message_id','sender_id','message_at','text','reply_to_id')},
+                     'content':m['_content'],
                      'identity':json.loads(m.get('identity_json') or '{}'),
                      'fragment':{'start':m.get('_fragment_start'), 'end':m.get('_fragment_end'), 'total':m.get('_fragment_total')}} for m in messages],
     }
@@ -194,6 +197,11 @@ def parse(text, messages, events, claims, auxiliary=()):
         if not isinstance(speaker,str):
             raise ValueError('Invalid claim speaker identity')
         if c['attribution']=='self_statement':
+            if any(mids[mid]['_content']['authorship']!='sender_text' for mid in evidence):
+                rejected.append({'reason':'附件识别或分享内容不能认证为本人陈述',
+                                 'subject_id':sub,'claim_type':c['claim_type'],'content':c['content'],
+                                 'source_message_ids':evidence})
+                continue
             own=[mid for mid in evidence if mids[mid]['sender_id']==sub]
             foreign=[mid for mid in evidence if mids[mid]['sender_id']!=sub]
             if not own:

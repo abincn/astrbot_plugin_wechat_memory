@@ -8,8 +8,9 @@ from astrbot.api import logger
 from astrbot.core.agent.tool import ToolSet
 
 from . import v3_extract,v3_store
-from .storage import day_key
+from .storage import day_key, now
 from .extraction import estimate_tokens
+from .message_content import prepare_message, CONTENT_RULES
 
 PROFILE_SYSTEM = """你负责老微信群的单个成员画像巩固。成员不会反复自我介绍！
 只根据本次提供的真实消息、本人行为、第三方明确说法及已有 claims，
@@ -51,7 +52,7 @@ async def consolidate(scheduler,s,member=''):
         with store._lock:
             # Include the subject's actual messages AND genuine third-party attribution in the same group.
             rows=[dict(r) for r in store.db.execute(
-                """SELECT DISTINCT r.id,r.message_id,r.sender_id,r.message_at,r.text,r.reply_to_id
+                """SELECT DISTINCT r.id,r.message_id,r.sender_id,r.message_at,r.text,r.reply_to_id,r.kind,r.source
                    FROM raw_messages r
                    WHERE r.platform=? AND r.owner=? AND r.room=?
                      AND r.text!='' AND r.id>?
@@ -65,6 +66,28 @@ async def consolidate(scheduler,s,member=''):
             with store.transaction():
                 store.db.execute("UPDATE consolidation_queue SET status='completed' WHERE platform=? AND owner=? AND room=? AND subject_id=?",(*v3_store.key(s),member))
             return {'status':'empty','reason':'No pending member evidence'}
+        rows=[prepare_message(row) for row in rows]
+        skipped=[row for row in rows if row['_deferred']]
+        prefix=cursor
+        for row in rows:
+            if not row['_deferred']:break
+            prefix=row['id']
+        if skipped:
+            with store.transaction():
+                if store.is_opted_out(s,member):return {'status':'denied','reason':'成员已退出画像'}
+                for row in skipped:
+                    store.db.execute('''INSERT INTO analysis_ledger
+                        (platform,owner,room,raw_id,pipeline_version,result,reason,updated_at)
+                        VALUES(?,?,?,?,3,'deferred',?,?) ON CONFLICT(platform,owner,room,raw_id,pipeline_version)
+                        DO UPDATE SET result=excluded.result,reason=excluded.reason,updated_at=excluded.updated_at''',
+                        (*v3_store.key(s),row['id'],row['_deferred'],now()))
+                if prefix>cursor:
+                    store.db.execute('''INSERT INTO profile_progress(platform,owner,room,subject_id,cursor,offset) VALUES(?,?,?,?,?,0)
+                        ON CONFLICT(platform,owner,room,subject_id) DO UPDATE SET cursor=excluded.cursor,offset=0''',
+                        (*v3_store.key(s),member,prefix))
+                    fragment_offset=0
+        rows=[row for row in rows if not row['_deferred']]
+        if not rows:return {'status':'empty','reason':'本批只有待解析附件或 XML，未调用模型','skipped':len(skipped)}
         # Do not silently lose the longer-term chronology: use bounded oldest+newest messages.
         rows=sorted(rows,key=lambda r:r['id'])
         relevant=v3_store.profiles(store,s,limit=100,member=member)
@@ -76,8 +99,10 @@ async def consolidate(scheduler,s,member=''):
             'revision':r['revision']} for r in relevant]
         # Ensure every available message id in prompt is counted toward coverage.
         for message in rows:message['_timezone']=cfg.get('dream_timezone','Asia/Shanghai')
-        system=PROFILE_SYSTEM+'\n目标成员ID：'+member
+        system=PROFILE_SYSTEM+CONTENT_RULES+'\n目标成员ID：'+member
         if fragment_offset and rows:
+            if rows[0]['_content'].get('xml'):
+                return {'status':'oversize','reason':'XML 存在旧分片偏移，需重新整理，未调用模型'}
             rows=rows[:1]
             rows[0]['_fragment_start']=fragment_offset
             rows[0]['_fragment_total']=len(rows[0]['text'])
@@ -87,7 +112,7 @@ async def consolidate(scheduler,s,member=''):
         while rows and estimate_tokens(system+prompt)>cap:
             if existing:
                 existing.pop()
-            elif len(rows)==1 and len(rows[0]['text'])>100:
+            elif len(rows)==1 and len(rows[0]['text'])>100 and not rows[0]['_content'].get('xml'):
                 rows[0].setdefault('_fragment_start',0)
                 rows[0].setdefault('_fragment_total',len(rows[0]['text']))
                 rows[0]['text']=rows[0]['text'][:len(rows[0]['text'])//2]

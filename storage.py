@@ -15,6 +15,7 @@ from .identity import Scope
 from .schema_v3 import migrate
 from .v3_schema import migrate as migrate_v3
 from .policy import safe_content, topic_key
+from .message_content import prepare_message
 
 
 def now():
@@ -278,6 +279,9 @@ class MemoryStore:
             for r in rows:
                 # Non-text/invalid rows advance the cursor without consuming LLM input.
                 if r['kind'] not in ('text','media_text') or not r['text']:
+                    last=r['id'];continue
+                r=prepare_message(r)
+                if r['_deferred']:
                     last=r['id'];continue
                 if len(r['text'])>max_chars:
                     if selected:break
@@ -892,6 +896,9 @@ class MemoryStore:
             selected=[];length=0;last=start-1
             for row in rows:
                 if row['kind'] not in ('text','media_text') or not row['text']:
+                    last=row['id'];continue
+                row=prepare_message(row)
+                if row['_deferred']:
                     last=row['id'];continue
                 if len(row['text'])>max_chars:
                     if selected:break

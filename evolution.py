@@ -33,6 +33,8 @@ def _validated(scope,changes,messages,existing,max_changes:int):
         evidence_type=c.get('evidence_type','other')
         if certainty not in ('explicit','uncertain') or evidence_type not in ('self_report','group_decision','other'):
             raise ValueError('Invalid evidence classification')
+        if evidence_type=='self_report' and any(source[r]['_content']['authorship']!='sender_text' for r in refs):
+            raise ValueError('附件识别或分享内容不能认证为本人陈述')
         if level=='member':
             if any(source[r].get('source')=='media_derived' for r in refs):
                 certainty='uncertain'
@@ -112,6 +114,8 @@ def _validate_v2(s, payload, messages, existing_topics, existing_observations):
         if evidence_type not in ('self_report','group_decision','other'):
             raise ValueError('Invalid V2 observation evidence')
         evidence = refs(row)
+        if evidence_type=='self_report' and any(by_message[mid]['_content']['authorship']!='sender_text' for mid in evidence):
+            raise ValueError('附件识别或分享内容不能认证为本人陈述')
         if scope == 'member' and (evidence_type != 'self_report' or
                 any(by_message[mid]['sender_id'] != subject for mid in evidence)):
             raise ValueError('Member observations require same-author direct evidence')
